@@ -274,7 +274,14 @@ type DialerOption func(*edgeSession)
 func WithInsecureTLS() DialerOption { return func(s *edgeSession) { s.insecureTLS = true } }
 
 func HTTP2Dialer(host string, port int, proxyPass string, bearerProvider func() (string, error), opts ...DialerOption) Dialer {
-	s := &edgeSession{host: host, port: port, transport: &http2.Transport{}}
+	s := &edgeSession{host: host, port: port, transport: &http2.Transport{
+		// Detect a dead idle edge session quickly: the edge sends PING when
+		// the stream stays idle; if no ack comes back the session is marked
+		// closed and the next dial rebuilds instead of hanging on a zombie.
+		ReadIdleTimeout:  30 * time.Second,
+		PingTimeout:      15 * time.Second,
+		WriteByteTimeout: 15 * time.Second,
+	}}
 	for _, o := range opts {
 		o(s)
 	}
@@ -283,9 +290,9 @@ func HTTP2Dialer(host string, port int, proxyPass string, bearerProvider func() 
 		if err == nil {
 			return conn, nil
 		}
-		// 401 on CONNECT = expired/invalid pass; other errors usually mean a
-		// dead edge session. Either way: refresh the pass (when possible),
-		// rebuild the session, retry exactly once.
+		// 401 = expired/invalid pass → refresh via the provider; any other
+		// dial error (dead idle edge session, network blip) → just rebuild
+		// the session. Either way reset + retry exactly once.
 		if strings.Contains(err.Error(), "HTTP 401") && bearerProvider != nil {
 			fresh, perr := bearerProvider()
 			if perr != nil {
@@ -417,6 +424,7 @@ type http2TunnelConn struct {
 
 func (c *http2TunnelConn) Read(p []byte) (int, error)  { return c.reader.Read(p) }
 func (c *http2TunnelConn) Write(p []byte) (int, error) { return c.writer.Write(p) }
+
 // closeTunnel ends a single tunnel without tearing down the shared edge
 // session: closing the request-body pipe ends the client->upstream half,
 // closing the response body ends the other half. The underlying h2 session

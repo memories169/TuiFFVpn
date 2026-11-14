@@ -128,6 +128,13 @@ the same behavior. The shared session here is re-established only when it
 dies or the proxy pass changes; each SOCKS5 client tunnel still gets its own
 HTTP/2 stream, closed independently.
 
+Dead-session healing: the h2 session carries keep-alive PINGs
+(`ReadIdleTimeout` 30s / `PingTimeout` 15s), so an edge that silently drops
+idle sessions is detected instead of hanging. A dial that hits a dead
+session (or any transient CONNECT failure) rebuilds the session and retries
+once transparently — the client just sees a slightly slower first connect
+after a long idle period.
+
 Token ingestion also self-heals: when the just-pushed access token is rejected
 by Guardian (e.g. it was already near expiry), the container refreshes it with
 the account's refresh token, provisions the entitlement via Guardian
