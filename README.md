@@ -130,30 +130,23 @@ those require re-adding the account.
 
 ### Stable exit IP
 
-All SOCKS5 connections multiplex over **one persistent MASQUE edge session**
-(utls + HTTP/2). Mozilla's edge farm maps each upstream session to a NAT
-egress, so a fresh session per connection would rotate the exit IP on every
-connection — the reference client's `-upstream-conns 1` default documents
-the same behavior. The shared session here is re-established only when it
-dies or the proxy pass changes; each SOCKS5 client tunnel still gets its own
-HTTP/2 stream, closed independently.
+SOCKS5 connections multiplex over a small pool of persistent MASQUE edge
+sessions (utls + HTTP/2; up to 8 sessions, 32 concurrent tunnels each —
+the same shape as sing-box's upstream session pool, which FoxyVPN uses as
+its tunnel engine). Mozilla's edge farm maps each upstream session to a
+NAT egress, so a fresh session per connection would rotate the exit IP on
+every connection. Sessions with in-flight tunnels are **never** torn down;
+idle-empty ones are pruned after 2 minutes, and the keepalive loop pings
+every session every 45 s even with no active streams (Mozilla edges reap
+idle sessions after a few minutes).
 
-Dead-session healing: the h2 session carries keep-alive PINGs
-(`ReadIdleTimeout` 30s / `PingTimeout` 15s) plus a background keepalive
-loop that pings the live edge session every 45 s even with no active
-streams (Mozilla edges reap idle sessions after a few minutes —
-diagnostics confirmed the exit IP rotates exactly when the session count
-bumps). A failed ping drops the session; the next dial rebuilds it.
-
-Pass renewal without session churn: the Guardian proxy pass has a shorter
-TTL than you might re-trigger manually, and the edge tears sessions down
-for expired auth. A renewal loop therefore refreshes the pass **2 minutes
-before its expiry** (lead time mirrors the reference client's
-`proxyPassRenewLead`) through the same healing chain and swaps it into the
-dialer atomically — subsequent CONNECTs carry the fresh pass on the
-**same** edge session, preserving the egress IP across pass rotations.
-This is the same `session=retained` behavior as the reference client's
-`adoptPass → UpdateToken` path.
+Session hygiene mirrors sing-box: before reusing a session idle for more
+than 25 s, the dialer pings it — a zombie session fails the ping and is
+replaced synchronously, so a CONNECT never stalls inside a half-dead
+session. Pass renewal swaps the pass into the dialer atomically without
+touching any session (`session=retained`), and dead sessions found by
+failed CONNECTs are dropped — not closed under live traffic — with the
+retry landing on another pooled session or a fresh one.
 
 The CONNECT handshake itself is bounded with a 12-second budget inside the
 dialer by racing the CONNECT against a timer — a session that stalls (edge

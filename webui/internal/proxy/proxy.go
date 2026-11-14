@@ -268,13 +268,17 @@ func readRequest(r *bufio.Reader) (byte, string, error) {
 // re-established only when it dies or the pass changes.
 // DialerOption customizes the MASQUE dialer (tests use it to skip TLS
 // verification against a local mock edge; production never does).
-type DialerOption func(*edgeSession)
+type DialerOption func(*MasqueDialer)
 
 // masqueDialer is HTTP2Dialer's return type: a Dialer that also reports
 // edge-session diagnostics.
 type MasqueDialer struct {
-	fn Dialer
-	s  *edgeSession
+	fn   Dialer
+	pool *sessionPool
+	// host/port/insecureTLS describe the edge endpoint for new sessions.
+	host        string
+	port        int
+	insecureTLS bool
 	// keepaliveStop ends the session keepalive loop on Close.
 	keepaliveStop chan struct{}
 
@@ -309,9 +313,18 @@ func (m *MasqueDialer) SetRenewProvider(provider func() (string, error), expires
 	go m.renewalLoop(expiresAt)
 }
 
-// ResetSession tears the edge session down unconditionally (diagnostics
-// and the test-connection retry path); the next dial builds a fresh one.
-func (m *MasqueDialer) ResetSession() { m.s.reset() }
+// ResetSession tears every pooled edge session down unconditionally
+// (diagnostics and the test-connection retry path); the next dial builds
+// fresh sessions.
+func (m *MasqueDialer) ResetSession() {
+	m.pool.mu.Lock()
+	sessions := m.pool.sessions
+	m.pool.sessions = nil
+	m.pool.mu.Unlock()
+	for _, ses := range sessions {
+		ses.reset()
+	}
+}
 
 // UpdatePass swaps the current pass atomically; new CONNECTs use it
 // immediately on the SAME edge session.
@@ -357,7 +370,7 @@ func (m *MasqueDialer) renewalLoop(expiresAt time.Time) {
 	}
 }
 
-// Close stops the keepalive + renewal loops and drops the edge session.
+// Close stops the keepalive + renewal loops and drops all sessions.
 func (m *MasqueDialer) Close() {
 	if m.keepaliveStop != nil {
 		select {
@@ -373,7 +386,7 @@ func (m *MasqueDialer) Close() {
 			close(m.renewStop)
 		}
 	}
-	m.s.reset()
+	m.ResetSession()
 }
 
 func (m *MasqueDialer) Dial(ctx context.Context, dst string) (net.Conn, error) {
@@ -381,32 +394,35 @@ func (m *MasqueDialer) Dial(ctx context.Context, dst string) (net.Conn, error) {
 }
 
 // Generation reports how many distinct edge sessions have been built.
-func (m *MasqueDialer) Generation() int64 { return m.s.Generation() }
+func (m *MasqueDialer) Generation() int64 {
+	m.pool.mu.Lock()
+	defer m.pool.mu.Unlock()
+	return m.pool.gen
+}
 
 // WithInsecureTLS skips edge-certificate verification. Test-only.
-func WithInsecureTLS() DialerOption { return func(s *edgeSession) { s.insecureTLS = true } }
+func WithInsecureTLS() DialerOption { return func(m *MasqueDialer) { m.insecureTLS = true } }
 
 func HTTP2Dialer(host string, port int, proxyPass string, bearerProvider func() (string, error), opts ...DialerOption) *MasqueDialer {
-	s := &edgeSession{host: host, port: port, transport: &http2.Transport{
-		// Detect a dead idle edge session quickly: the edge sends PING when
-		// the stream stays idle; if no ack comes back the session is marked
-		// closed and the next dial rebuilds instead of hanging on a zombie.
-		ReadIdleTimeout:  30 * time.Second,
-		PingTimeout:      15 * time.Second,
-		WriteByteTimeout: 15 * time.Second,
-	}}
-	for _, o := range opts {
-		o(s)
+	m := &MasqueDialer{
+		pool:        &sessionPool{},
+		host:        host,
+		port:        port,
+		insecureTLS: false,
+		proxyPass:   proxyPass,
 	}
-	m := &MasqueDialer{s: s, proxyPass: proxyPass}
+	for _, o := range opts {
+		o(m)
+	}
 	m.fn = func(ctx context.Context, dst string) (net.Conn, error) {
-		conn, err := s.dial(ctx, dst, m.currentPass())
+		conn, err := m.dial(ctx, dst, m.currentPass())
 		if err == nil {
 			return conn, nil
 		}
 		// 401 = expired/invalid pass → refresh via the provider; any other
-		// dial error (dead idle edge session, network blip) → just rebuild
-		// the session. Either way reset + retry exactly once.
+		// dial error (dead idle edge session, network blip) → the failed
+		// session was already dropped inside dial(); retry once — acquire()
+		// will pick another pooled session or open a new one.
 		if strings.Contains(err.Error(), "HTTP 401") && bearerProvider != nil {
 			fresh, perr := bearerProvider()
 			if perr != nil {
@@ -414,27 +430,23 @@ func HTTP2Dialer(host string, port int, proxyPass string, bearerProvider func() 
 			}
 			m.UpdatePass(fresh)
 		}
-		// Force a FRESH session for the retry — the first attempt already
-		// reset() via dial(), but get() may reuse a borderline session; a
-		// guaranteed-new session is the reliable recovery.
-		s.reset()
-		conn, err = s.dial(ctx, dst, m.currentPass())
+		conn, err = m.dial(ctx, dst, m.currentPass())
 		return conn, err
 	}
-	// Background keepalive: ping the edge session while it is idle so the
-	// server does not reap it (Mozilla edges drop sessions after a few idle
-	// minutes — diagnostics confirmed the exit IP rotates exactly when the
-	// session count bumps). A failed ping drops the session; the next dial
-	// rebuilds. Mirrors firefox-vpn-client's runKeepAlive.
+	// Background keepalive: ping pooled sessions while idle so the server
+	// does not reap them (Mozilla edges drop sessions after a few idle
+	// minutes). A failed ping marks the session dead only when it has no
+	// in-flight tunnels; the next dial rebuilds. Mirrors firefox-vpn-client's
+	// runKeepAlive.
 	m.keepaliveStop = make(chan struct{})
-	go s.keepalive(m.keepaliveStop, 45*time.Second)
+	go m.keepalive(m.keepaliveStop, 45*time.Second)
 	return m
 }
 
-// keepalive pings the live edge session on an interval. Between manual
-// clicks there are no active streams (so the transport-level idle PINGs
-// never fire); this explicit loop keeps the session from being reaped.
-func (s *edgeSession) keepalive(stop <-chan struct{}, interval time.Duration) {
+// keepalive pings every pooled session on an interval. Between client
+// clicks there are no active streams (so transport-level idle PINGs never
+// fire); this loop keeps sessions from being reaped.
+func (m *MasqueDialer) keepalive(stop <-chan struct{}, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -442,46 +454,62 @@ func (s *edgeSession) keepalive(stop <-chan struct{}, interval time.Duration) {
 		case <-stop:
 			return
 		case <-ticker.C:
-			s.mu.Lock()
-			cc := s.cc
-			s.mu.Unlock()
-			if cc == nil {
-				continue
-			}
-			pctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			err := cc.Ping(pctx)
-			cancel()
-			if err != nil && s.canReset() {
-				// Session failed its liveness check. Only tear it down when
-				// no tunnels are in flight — resetting mid-traffic would cut
-				// user connections (http2.ClientConn.Close kills every
-				// open stream). If tunnels are active, leave the session
-				// alone: its streams still work, and the next dial decides
-				// (CanTakeNewRequest) whether to rebuild.
-				s.reset()
+			m.pool.mu.Lock()
+			sessions := append([]*edgeSession(nil), m.pool.sessions...)
+			m.pool.mu.Unlock()
+			for _, ses := range sessions {
+				ses.mu.Lock()
+				cc := ses.cc
+				open := ses.openTunnels
+				ses.mu.Unlock()
+				if cc == nil {
+					continue
+				}
+				pctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				err := cc.Ping(pctx)
+				cancel()
+				if err != nil && open == 0 {
+					// Only tear down idle sessions — never kill one with
+					// traffic in flight.
+					ses.reset()
+				}
 			}
 		}
 	}
 }
 
+// keepalive pings the live edge session on an interval. Between manual
+// clicks there are no active streams (so the transport-level idle PINGs
+// never fire); this explicit loop keeps the session from being reaped.
+
 // edgeSession is a single reusable MASQUE edge session (utls + http2).
+// sessionPool holds the dialer's live edge sessions.
+type sessionPool struct {
+	mu       sync.Mutex
+	sessions []*edgeSession
+	gen      int64
+}
+
 type edgeSession struct {
 	mu          sync.Mutex
 	host        string
 	port        int
-	transport   *http2.Transport
 	cc          *http2.ClientConn
 	tconn       *utls.UConn
 	insecureTLS bool
-	generation  int64     // bumped each time a NEW edge session is established
+	generation  int64     // bumped when this session is established
 	openTunnels int       // tunnels currently open on this session
 	lastUsed    time.Time // last time a CONNECT was issued on this session
 }
 
 // maxStreamsPerSession caps concurrent tunnels per edge session (sing-box
-// default 32): when full, the next dial gets a fresh session — this also
-// prevents a single long-lived session from accumulating state.
+// default 32): when full, NEW dials go onto another session — existing
+// sessions are left to drain, never torn down under live traffic.
 const maxStreamsPerSession = 32
+
+// maxSessionsPerDialer bounds the session pool (like sing-box's upstream
+// session pool). Beyond it, the least-loaded session is used anyway.
+const maxSessionsPerDialer = 8
 
 // Generation reports how many distinct edge sessions the dialer has built.
 // A stable exit IP needs this to stay at 1 across repeated dials.
@@ -491,42 +519,96 @@ func (s *edgeSession) Generation() int64 {
 	return s.generation
 }
 
-// get returns the live edge session, establishing one if absent or dead.
-func (s *edgeSession) get(ctx context.Context) (*http2.ClientConn, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.cc != nil && s.cc.CanTakeNewRequest() {
-		// Session hygiene (mirrors sing-box's idle_timeout/keep_alive):
-		// a session idle for too long may be half-dead — the edge reaped
-		// it but our conn object doesn't know yet. Verify with a ping
-		// before handing it to a new CONNECT; a failed ping forces a
-		// rebuild so the CONNECT never stalls inside a zombie session.
-		idle := time.Since(s.lastUsed)
-		if idle > 25*time.Second {
-			pctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-			err := s.cc.Ping(pctx)
-			cancel()
-			if err != nil {
-				s.closeLocked()
-			}
-		}
-		if s.cc != nil && s.cc.CanTakeNewRequest() && s.openTunnels < maxStreamsPerSession {
-			s.lastUsed = time.Now()
-			return s.cc, nil
+// acquire returns a session with capacity for one more tunnel, creating one
+// when needed. Sessions with in-flight tunnels are NEVER closed here —
+// full/idle sessions are simply not chosen; they drain on their own and get
+// pruned by reapIdleLocked.
+func (p *sessionPool) acquire(ctx context.Context, host string, port int, insecureTLS bool) (*edgeSession, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	// Prefer a live session with capacity.
+	for _, ses := range p.sessions {
+		if ses.usableLocked() {
+			return ses, nil
 		}
 	}
-	s.closeLocked()
-	proxyHost := net.JoinHostPort(s.host, fmt.Sprint(s.port))
+	// Drop dead/full sessions beyond the pool cap before growing.
+	p.pruneLocked()
+	if len(p.sessions) >= maxSessionsPerDialer {
+		// All sessions are full or unhealthy — use the least loaded alive one.
+		var best *edgeSession
+		for _, ses := range p.sessions {
+			if best == nil || ses.openTunnels < best.openTunnels {
+				best = ses
+			}
+		}
+		if best != nil {
+			return best, nil
+		}
+	}
+	ses, err := newEdgeSession(ctx, host, port, insecureTLS, &p.gen)
+	if err != nil {
+		return nil, err
+	}
+	p.sessions = append(p.sessions, ses)
+	return ses, nil
+}
+
+// usableLocked reports whether this session can take one more tunnel right
+// now, pinging first when it has been idle long enough to be possibly reaped.
+func (s *edgeSession) usableLocked() bool {
+	if s.cc == nil || !s.cc.CanTakeNewRequest() || s.openTunnels >= maxStreamsPerSession {
+		return false
+	}
+	// Session hygiene (mirrors sing-box idle_timeout): a session idle for
+	// too long may be half-dead — the edge reaped it but our conn object
+	// doesn't know. Verify with a ping BEFORE handing it to a new CONNECT;
+	// a failed ping marks the session dead so acquire() skips/rebuilds.
+	if idle := time.Since(s.lastUsed); idle > 25*time.Second {
+		pctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		err := s.cc.Ping(pctx)
+		cancel()
+		if err != nil {
+			s.closeLocked()
+			return false
+		}
+		s.lastUsed = time.Now()
+	}
+	return true
+}
+
+// pruneLocked removes sessions that are closed, empty and idle past their
+// usefulness. Never touches sessions with open tunnels.
+func (p *sessionPool) pruneLocked() {
+	keep := p.sessions[:0]
+	for _, ses := range p.sessions {
+		ses.mu.Lock()
+		dead := ses.cc == nil
+		empty := ses.openTunnels == 0
+		idle := time.Since(ses.lastUsed) > 2*time.Minute
+		ses.mu.Unlock()
+		if dead || (empty && idle) {
+			ses.closeLocked()
+			continue
+		}
+		keep = append(keep, ses)
+	}
+	p.sessions = keep
+}
+
+// newEdgeSession dials TCP+utls+h2 to the edge and returns a live session.
+func newEdgeSession(ctx context.Context, host string, port int, insecureTLS bool, gen *int64) (*edgeSession, error) {
+	proxyHost := net.JoinHostPort(host, fmt.Sprint(port))
 	dialer := &net.Dialer{Timeout: 15 * time.Second}
 	rawConn, err := dialer.DialContext(ctx, "tcp", proxyHost)
 	if err != nil {
 		return nil, err
 	}
 	tconn := utls.UClient(rawConn, &utls.Config{
-		ServerName:         s.host,
+		ServerName:         host,
 		MinVersion:         utls.VersionTLS12,
 		NextProtos:         []string{"h2"},
-		InsecureSkipVerify: s.insecureTLS,
+		InsecureSkipVerify: insecureTLS,
 	}, utls.HelloFirefox_Auto)
 	if err := tconn.HandshakeContext(ctx); err != nil {
 		rawConn.Close()
@@ -536,15 +618,36 @@ func (s *edgeSession) get(ctx context.Context) (*http2.ClientConn, error) {
 		tconn.Close()
 		return nil, errors.New("server did not negotiate h2")
 	}
-	cc, err := s.transport.NewClientConn(tconn)
+	transport := &http2.Transport{
+		ReadIdleTimeout:  30 * time.Second,
+		PingTimeout:      15 * time.Second,
+		WriteByteTimeout: 15 * time.Second,
+	}
+	cc, err := transport.NewClientConn(tconn)
 	if err != nil {
 		tconn.Close()
 		return nil, err
 	}
-	s.cc = cc
-	s.tconn = tconn
-	s.generation++
-	return cc, nil
+	if gen != nil {
+		*gen++
+	}
+	return &edgeSession{
+		mu:          sync.Mutex{},
+		cc:          cc,
+		tconn:       tconn,
+		host:        host,
+		port:        port,
+		insecureTLS: insecureTLS,
+		generation:  derefGen(gen),
+		lastUsed:    time.Now(),
+	}, nil
+}
+
+func derefGen(gen *int64) int64 {
+	if gen == nil {
+		return 0
+	}
+	return *gen
 }
 
 // canReset reports whether no tunnels are currently open on the session.
@@ -554,13 +657,15 @@ func (s *edgeSession) canReset() bool {
 	return s.openTunnels == 0
 }
 
-// reset tears the session down; the next dial builds a fresh one.
+// reset tears the session down; only safe when no tunnels are in flight
+// (callers gate with canReset or accept the disconnect explicitly).
 func (s *edgeSession) reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closeLocked()
 }
 
+// closeLocked closes the underlying connection. Callers must hold s.mu.
 func (s *edgeSession) closeLocked() {
 	if s.cc != nil {
 		_ = s.cc.Close()
@@ -572,13 +677,13 @@ func (s *edgeSession) closeLocked() {
 	}
 }
 
-// dial issues one CONNECT tunnel over the shared edge session.
-func (s *edgeSession) dial(ctx context.Context, dst, proxyPass string) (net.Conn, error) {
-	cc, err := s.get(ctx)
+// dial issues one CONNECT tunnel over a pooled edge session.
+func (m *MasqueDialer) dial(ctx context.Context, dst, proxyPass string) (net.Conn, error) {
+	ses, err := m.pool.acquire(ctx, m.host, m.port, m.insecureTLS)
 	if err != nil {
 		return nil, err
 	}
-	proxyHost := net.JoinHostPort(s.host, fmt.Sprint(s.port))
+	proxyHost := net.JoinHostPort(m.host, fmt.Sprint(m.port))
 	// Bidirectional tunnel: http2 CONNECT reads the request body to send
 	// client->upstream data, and returns the upstream->client stream in the
 	// response body. Wire them with an io.Pipe.
@@ -605,7 +710,7 @@ func (s *edgeSession) dial(ctx context.Context, dst, proxyPass string) (net.Conn
 	// x/net/http2 ties the stream's whole lifetime to req.Context(); a
 	// canceled handshake context would murder the tunnel right after the
 	// headers arrive ("context canceled" on every subsequent read). Instead
-	// race the RoundTrip against a timer and reset the session on timeout
+	// race the RoundTrip against a timer and drop the session on timeout
 	// (closing the session aborts the blocked stream).
 	type rtResult struct {
 		resp *http.Response
@@ -613,7 +718,7 @@ func (s *edgeSession) dial(ctx context.Context, dst, proxyPass string) (net.Conn
 	}
 	rtCh := make(chan rtResult, 1)
 	go func() {
-		resp, err := cc.RoundTrip(req)
+		resp, err := ses.cc.RoundTrip(req)
 		rtCh <- rtResult{resp, err}
 	}()
 	var resp *http.Response
@@ -621,32 +726,35 @@ func (s *edgeSession) dial(ctx context.Context, dst, proxyPass string) (net.Conn
 	case r := <-rtCh:
 		if r.err != nil {
 			pw.Close()
-			// A failed RoundTrip often means the shared session died; drop
-			// it so the retry (and the next dial) establishes a fresh one.
-			s.reset()
+			// Mark the session dead so acquire() won't reuse it; tunnels in
+			// flight on it (if any) keep their streams until they fail.
+			ses.mu.Lock()
+			ses.closeLocked()
+			ses.mu.Unlock()
 			return nil, r.err
 		}
 		resp = r.resp
 	case <-time.After(12 * time.Second):
 		pw.Close()
-		// Abort the stalled stream by dropping the whole session.
-		s.reset()
-		return nil, errors.New("connect handshake timed out (12s) — session reset")
+		ses.mu.Lock()
+		ses.closeLocked()
+		ses.mu.Unlock()
+		return nil, errors.New("connect handshake timed out (12s) — session dropped")
 	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		resp.Body.Close()
-		pw.Close()
-		return nil, fmt.Errorf("connect refused (HTTP %d)", resp.StatusCode)
+	ses.mu.Lock()
+	ses.openTunnels++
+	ses.lastUsed = time.Now()
+	ses.mu.Unlock()
+	tc := &http2TunnelConn{
+		reader: resp.Body,
+		writer: pw,
+		cc:     ses.cc,
+		onClose: func() {
+			ses.mu.Lock()
+			ses.openTunnels--
+			ses.mu.Unlock()
+		},
 	}
-	s.mu.Lock()
-	s.openTunnels++
-	s.lastUsed = time.Now()
-	s.mu.Unlock()
-	tc := &http2TunnelConn{reader: resp.Body, writer: pw, cc: cc, onClose: func() {
-		s.mu.Lock()
-		s.openTunnels--
-		s.mu.Unlock()
-	}}
 	return tc, nil
 }
 
