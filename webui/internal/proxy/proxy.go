@@ -275,6 +275,20 @@ type DialerOption func(*edgeSession)
 type MasqueDialer struct {
 	fn Dialer
 	s  *edgeSession
+	// keepaliveStop ends the session keepalive loop on Close.
+	keepaliveStop chan struct{}
+}
+
+// Close stops the keepalive loop and drops the edge session.
+func (m *MasqueDialer) Close() {
+	if m.keepaliveStop != nil {
+		select {
+		case <-m.keepaliveStop:
+		default:
+			close(m.keepaliveStop)
+		}
+	}
+	m.s.reset()
 }
 
 func (m *MasqueDialer) Dial(ctx context.Context, dst string) (net.Conn, error) {
@@ -319,7 +333,43 @@ func HTTP2Dialer(host string, port int, proxyPass string, bearerProvider func() 
 		conn, err = s.dial(ctx, dst, proxyPass)
 		return conn, err
 	}
+	// Background keepalive: ping the edge session while it is idle so the
+	// server does not reap it (Mozilla edges drop sessions after a few idle
+	// minutes — diagnostics confirmed the exit IP rotates exactly when the
+	// session count bumps). A failed ping drops the session; the next dial
+	// rebuilds. Mirrors firefox-vpn-client's runKeepAlive.
+	m.keepaliveStop = make(chan struct{})
+	go s.keepalive(m.keepaliveStop, 45*time.Second)
 	return m
+}
+
+// keepalive pings the live edge session on an interval. Between manual
+// clicks there are no active streams (so the transport-level idle PINGs
+// never fire); this explicit loop keeps the session from being reaped.
+func (s *edgeSession) keepalive(stop <-chan struct{}, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			s.mu.Lock()
+			cc := s.cc
+			s.mu.Unlock()
+			if cc == nil {
+				continue
+			}
+			pctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			err := cc.Ping(pctx)
+			cancel()
+			if err != nil {
+				// Session is dead (network drop / edge reaped it). Drop it;
+				// the next dial establishes a fresh one.
+				s.reset()
+			}
+		}
+	}
 }
 
 // edgeSession is a single reusable MASQUE edge session (utls + http2).

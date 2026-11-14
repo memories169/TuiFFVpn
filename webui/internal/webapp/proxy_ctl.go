@@ -59,6 +59,10 @@ type TestResult struct {
 func (a *App) startProxy(host string, port int, bearer string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.edgeDialer != nil {
+		a.edgeDialer.Close()
+		a.edgeDialer = nil
+	}
 	if a.proxySrv != nil {
 		a.proxySrv.Close()
 		a.proxySrv = nil
