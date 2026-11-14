@@ -305,6 +305,16 @@ All credit for the original protocol reverse-engineering belongs to the
 FoxyVPN authors; this repository is a study/automation derivative for
 personal account management.
 
+## License
+
+Licensed under the **GNU GPL-3.0** (see [LICENSE](LICENSE)) — any fork or
+redistribution must remain open-source under the same terms.
+
+Note on references: FoxyVPN (by Vauth) is MIT-licensed; this project contains
+no code copied from it — only re-implemented mechanisms, credited above. The
+MIT license of that project requires keeping its copyright notice in
+redistributions of its own code, which does not apply here.
+
 ## Troubleshooting the tunnel
 
 - **"tunnel connected but no exit IP returned; inner response: …"** — the

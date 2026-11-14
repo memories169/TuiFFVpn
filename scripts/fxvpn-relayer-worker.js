@@ -1,3 +1,5 @@
+// fxvpn-relayer-worker — Cloudflare Worker relaying FxA/Guardian requests
+// past Fastly bot-protection. GPL-3.0-only (see LICENSE at repo root).
 const ALLOWED_HOSTS = new Set([
   "vpn.mozilla.org",
   "api.accounts.firefox.com",

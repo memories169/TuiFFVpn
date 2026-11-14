@@ -1,3 +1,17 @@
+// fxvpn-webui — unofficial Firefox VPN client console.
+// Copyright (C) 2026
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, version 3 of the License.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Package proxy implements the SOCKS5 listener and the upstream HTTP/2 CONNECT
 // tunnel to a selected Firefox VPN server, authenticated with the proxy pass.
 package proxy

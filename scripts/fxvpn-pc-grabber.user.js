@@ -2,6 +2,7 @@
 // @name         Firefox VPN Token Grabber (PC)
 // @namespace    fxvpn
 // @version      4.8.1
+// @license      GPL-3.0-only
 // @description  Bắt sessionToken từ Firefox Accounts (tự redirect sang context Firefox Desktop Sync để đăng ký VPN free cho account mới), tự đổi OAuth và đẩy vào container. Có escape hatch khi trang bị treo.
 // @author       you
 // @match        https://accounts.firefox.com/*
