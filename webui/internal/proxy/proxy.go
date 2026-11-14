@@ -597,21 +597,41 @@ func (s *edgeSession) dial(ctx context.Context, dst, proxyPass string) (net.Conn
 		auth = "Bearer " + auth
 	}
 	req.Header.Set("Proxy-Authorization", auth)
-	// Bound the CONNECT handshake (headers) with its own deadline: a stalled
-	// session must fail fast here — reset + retry — instead of hanging until
-	// the caller's outer timeout ("context deadline exceeded … awaiting
-	// headers"). Once the 2xx headers arrive, the tunnel inherits the
-	// caller's ctx for its lifetime.
-	rtCtx, rtCancel := context.WithTimeout(ctx, 12*time.Second)
-	req = req.WithContext(rtCtx)
-	resp, err := cc.RoundTrip(req)
-	rtCancel()
-	if err != nil {
+	// Bound the CONNECT handshake (waiting for response headers) with its
+	// own 12s budget — a stalled session must fail fast here instead of
+	// hanging until the caller's outer timeout.
+	//
+	// IMPORTANT: do NOT put this deadline into the request context —
+	// x/net/http2 ties the stream's whole lifetime to req.Context(); a
+	// canceled handshake context would murder the tunnel right after the
+	// headers arrive ("context canceled" on every subsequent read). Instead
+	// race the RoundTrip against a timer and reset the session on timeout
+	// (closing the session aborts the blocked stream).
+	type rtResult struct {
+		resp *http.Response
+		err  error
+	}
+	rtCh := make(chan rtResult, 1)
+	go func() {
+		resp, err := cc.RoundTrip(req)
+		rtCh <- rtResult{resp, err}
+	}()
+	var resp *http.Response
+	select {
+	case r := <-rtCh:
+		if r.err != nil {
+			pw.Close()
+			// A failed RoundTrip often means the shared session died; drop
+			// it so the retry (and the next dial) establishes a fresh one.
+			s.reset()
+			return nil, r.err
+		}
+		resp = r.resp
+	case <-time.After(12 * time.Second):
 		pw.Close()
-		// A failed RoundTrip often means the shared session died; drop it so
-		// the retry (and the next dial) establishes a fresh one.
+		// Abort the stalled stream by dropping the whole session.
 		s.reset()
-		return nil, err
+		return nil, errors.New("connect handshake timed out (12s) — session reset")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		resp.Body.Close()

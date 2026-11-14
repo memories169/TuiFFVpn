@@ -155,15 +155,18 @@ dialer atomically — subsequent CONNECTs carry the fresh pass on the
 This is the same `session=retained` behavior as the reference client's
 `adoptPass → UpdateToken` path.
 
-The CONNECT handshake itself is bounded with a 12-second deadline inside
-the dialer: a session that stalls (edge accepted the stream but never
-answers — occasionally seen right after a pass swap or right after
-switching to a different edge host) fails fast and the dialer retries once
-on a guaranteed-fresh session, instead of hanging until the caller's outer
-timeout. The keepalive loop never tears down a session with tunnels in
-flight (a failed liveness ping is tolerated while traffic is active — h2
-streams keep flowing), and Test connection resets the edge session and
-retries once before surfacing an error.
+The CONNECT handshake itself is bounded with a 12-second budget inside the
+dialer by racing the CONNECT against a timer — a session that stalls (edge
+accepted the stream but never answers — occasionally seen right after
+switching edges) fails fast and the dialer retries once on a
+guaranteed-fresh session. The budget must NOT live in the request context:
+x/net/http2 ties the tunnel stream's whole lifetime to `req.Context()`, so
+canceling a handshake context after the headers would kill the tunnel with
+`context canceled` on every subsequent read (a real regression this codebase
+hit and fixed by the race pattern). The keepalive loop never tears down a
+session with tunnels in flight (a failed liveness ping is tolerated while
+traffic is active — h2 streams keep flowing), and Test connection resets
+the edge session and retries once before surfacing an error.
 
 Tunnel deadlines are honored: `http2TunnelConn` implements
 `SetDeadline`/`SetReadDeadline`/`SetWriteDeadline` with a close-based
