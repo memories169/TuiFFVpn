@@ -256,43 +256,79 @@ func readRequest(r *bufio.Reader) (byte, string, error) {
 // HTTP2Dialer returns a Dialer that tunnels through the given Firefox VPN
 // server over HTTP/2 CONNECT, authenticated with the proxy pass.
 // HTTP2Dialer returns a Dialer that tunnels through the MASQUE edge. The
-// proxy pass comes from bearerProvider on every dial: when the edge answers
-// 401 (pass expired — Guardian passes are short-lived), the provider is
-// re-consulted once and the CONNECT retried, so a running proxy survives
-// pass expiry without user intervention.
-func HTTP2Dialer(host string, port int, proxyPass string, bearerProvider func() (string, error)) Dialer {
-	transport := &http2.Transport{}
+// proxy pass comes from bearerProvider when the edge answers 401 (pass
+// expired — Guardian passes are short-lived); after refreshing, the CONNECT
+// is retried once, so a running proxy survives pass expiry without user
+// intervention.
+//
+// Edge-session reuse: all tunnels multiplex over ONE persistent edge session
+// (utls+h2 ClientConn). Mozilla's edge farm maps each upstream session to a
+// NAT egress, so a fresh session per CONNECT would rotate the exit IP on
+// every connection. One session = one stable exit IP; the session is
+// re-established only when it dies or the pass changes.
+// DialerOption customizes the MASQUE dialer (tests use it to skip TLS
+// verification against a local mock edge; production never does).
+type DialerOption func(*edgeSession)
+
+// WithInsecureTLS skips edge-certificate verification. Test-only.
+func WithInsecureTLS() DialerOption { return func(s *edgeSession) { s.insecureTLS = true } }
+
+func HTTP2Dialer(host string, port int, proxyPass string, bearerProvider func() (string, error), opts ...DialerOption) Dialer {
+	s := &edgeSession{host: host, port: port, transport: &http2.Transport{}}
+	for _, o := range opts {
+		o(s)
+	}
 	return func(ctx context.Context, dst string) (net.Conn, error) {
-		conn, err := dialOnce(transport, host, port, proxyPass, dst, ctx)
+		conn, err := s.dial(ctx, dst, proxyPass)
 		if err == nil {
 			return conn, nil
 		}
-		// 401 on CONNECT = expired/invalid pass. Ask the provider for a
-		// fresh one and retry exactly once.
+		// 401 on CONNECT = expired/invalid pass; other errors usually mean a
+		// dead edge session. Either way: refresh the pass (when possible),
+		// rebuild the session, retry exactly once.
 		if strings.Contains(err.Error(), "HTTP 401") && bearerProvider != nil {
 			fresh, perr := bearerProvider()
 			if perr != nil {
 				return nil, fmt.Errorf("proxy pass refresh failed: %w (first error: %v)", perr, err)
 			}
 			proxyPass = fresh
-			conn, err = dialOnce(transport, host, port, proxyPass, dst, ctx)
 		}
+		s.reset()
+		conn, err = s.dial(ctx, dst, proxyPass)
 		return conn, err
 	}
 }
 
-// dialOnce performs a single CONNECT tunnel attempt to dst via the edge.
-func dialOnce(transport *http2.Transport, host string, port int, proxyPass, dst string, ctx context.Context) (net.Conn, error) {
-	proxyHost := net.JoinHostPort(host, fmt.Sprint(port))
+// edgeSession is a single reusable MASQUE edge session (utls + http2).
+type edgeSession struct {
+	mu          sync.Mutex
+	host        string
+	port        int
+	transport   *http2.Transport
+	cc          *http2.ClientConn
+	tconn       *utls.UConn
+	insecureTLS bool
+}
+
+// get returns the live edge session, establishing one if absent or dead.
+func (s *edgeSession) get(ctx context.Context) (*http2.ClientConn, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cc != nil && s.cc.CanTakeNewRequest() {
+		return s.cc, nil
+	}
+	s.closeLocked()
+	proxyHost := net.JoinHostPort(s.host, fmt.Sprint(s.port))
 	dialer := &net.Dialer{Timeout: 15 * time.Second}
 	rawConn, err := dialer.DialContext(ctx, "tcp", proxyHost)
 	if err != nil {
 		return nil, err
 	}
 	tconn := utls.UClient(rawConn, &utls.Config{
-		ServerName: host,
-		MinVersion: utls.VersionTLS12,
-		NextProtos: []string{"h2"},
+		ServerName:         s.host,
+		MinVersion:         utls.VersionTLS12,
+		NextProtos:         []string{"h2"},
+		InsecureSkipVerify: s.insecureTLS,
 	}, utls.HelloFirefox_Auto)
 	if err := tconn.HandshakeContext(ctx); err != nil {
 		rawConn.Close()
@@ -302,18 +338,47 @@ func dialOnce(transport *http2.Transport, host string, port int, proxyPass, dst 
 		tconn.Close()
 		return nil, errors.New("server did not negotiate h2")
 	}
-	cc, err := transport.NewClientConn(tconn)
+	cc, err := s.transport.NewClientConn(tconn)
 	if err != nil {
 		tconn.Close()
 		return nil, err
 	}
+	s.cc = cc
+	s.tconn = tconn
+	return cc, nil
+}
+
+// reset tears the session down; the next dial builds a fresh one.
+func (s *edgeSession) reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closeLocked()
+}
+
+func (s *edgeSession) closeLocked() {
+	if s.cc != nil {
+		_ = s.cc.Close()
+		s.cc = nil
+	}
+	if s.tconn != nil {
+		_ = s.tconn.Close()
+		s.tconn = nil
+	}
+}
+
+// dial issues one CONNECT tunnel over the shared edge session.
+func (s *edgeSession) dial(ctx context.Context, dst, proxyPass string) (net.Conn, error) {
+	cc, err := s.get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	proxyHost := net.JoinHostPort(s.host, fmt.Sprint(s.port))
 	// Bidirectional tunnel: http2 CONNECT reads the request body to send
 	// client->upstream data, and returns the upstream->client stream in the
 	// response body. Wire them with an io.Pipe.
 	pr, pw := io.Pipe()
 	req, err := http.NewRequestWithContext(ctx, http.MethodConnect, "http://"+dst, pr)
 	if err != nil {
-		cc.Close()
 		pw.Close()
 		return nil, err
 	}
@@ -329,13 +394,14 @@ func dialOnce(transport *http2.Transport, host string, port int, proxyPass, dst 
 	resp, err := cc.RoundTrip(req)
 	if err != nil {
 		pw.Close()
-		cc.Close()
+		// A failed RoundTrip often means the shared session died; drop it so
+		// the next dial establishes a fresh one.
+		s.reset()
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		resp.Body.Close()
 		pw.Close()
-		cc.Close()
 		return nil, fmt.Errorf("connect refused (HTTP %d)", resp.StatusCode)
 	}
 	return &http2TunnelConn{reader: resp.Body, writer: pw, cc: cc}, nil
@@ -351,12 +417,13 @@ type http2TunnelConn struct {
 
 func (c *http2TunnelConn) Read(p []byte) (int, error)  { return c.reader.Read(p) }
 func (c *http2TunnelConn) Write(p []byte) (int, error) { return c.writer.Write(p) }
+// closeTunnel ends a single tunnel without tearing down the shared edge
+// session: closing the request-body pipe ends the client->upstream half,
+// closing the response body ends the other half. The underlying h2 session
+// stays alive for the next tunnel.
 func (c *http2TunnelConn) Close() error {
 	_ = c.writer.Close()
 	_ = c.reader.Close()
-	if c.cc != nil {
-		_ = c.cc.Close()
-	}
 	return nil
 }
 func (c *http2TunnelConn) LocalAddr() net.Addr                { return nil }

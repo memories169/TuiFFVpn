@@ -118,6 +118,16 @@ callers re-read the rotated tokens. Refresh tokens only die permanently when
 the account changes password, signs out everywhere, or the session lapses —
 those require re-adding the account.
 
+### Stable exit IP
+
+All SOCKS5 connections multiplex over **one persistent MASQUE edge session**
+(utls + HTTP/2). Mozilla's edge farm maps each upstream session to a NAT
+egress, so a fresh session per connection would rotate the exit IP on every
+connection — the reference client's `-upstream-conns 1` default documents
+the same behavior. The shared session here is re-established only when it
+dies or the proxy pass changes; each SOCKS5 client tunnel still gets its own
+HTTP/2 stream, closed independently.
+
 Token ingestion also self-heals: when the just-pushed access token is rejected
 by Guardian (e.g. it was already near expiry), the container refreshes it with
 the account's refresh token, provisions the entitlement via Guardian
