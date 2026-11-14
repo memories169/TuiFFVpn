@@ -157,12 +157,28 @@ This is the same `session=retained` behavior as the reference client's
 
 The CONNECT handshake itself is bounded with a 12-second deadline inside
 the dialer: a session that stalls (edge accepted the stream but never
-answers — occasionally seen right after a pass swap) fails fast and the
-dialer retries once on a guaranteed-fresh session, instead of hanging
-until the caller's outer timeout. The keepalive loop never tears down a
-session with tunnels in flight (a failed liveness ping is tolerated while
-traffic is active — h2 streams keep flowing), and Test connection resets
-the edge session and retries once before surfacing an error.
+answers — occasionally seen right after a pass swap or right after
+switching to a different edge host) fails fast and the dialer retries once
+on a guaranteed-fresh session, instead of hanging until the caller's outer
+timeout. The keepalive loop never tears down a session with tunnels in
+flight (a failed liveness ping is tolerated while traffic is active — h2
+streams keep flowing), and Test connection resets the edge session and
+retries once before surfacing an error.
+
+Tunnel deadlines are honored: `http2TunnelConn` implements
+`SetDeadline`/`SetReadDeadline`/`SetWriteDeadline` with a close-based
+watchdog (h2 streams have no per-stream deadlines), so upper-layer stalls
+inside the tunnel surface as fast errors to the retry chain instead of
+hanging on a no-op deadline. Individual edge hosts can misbehave (accept
+CONNECT but stall the inner flow); if a location consistently fails the
+test after an automatic retry, pick a different edge from the same city.
+
+Session hygiene mirrors sing-box (which FoxyVPN uses as its tunnel engine):
+before reusing a session idle for more than 25 s, the dialer pings it — a
+zombie session fails the ping and is rebuilt synchronously, so a CONNECT
+never stalls inside a half-dead session. Concurrent tunnels per session
+are capped at 32 (sing-box's default `max_concurrent_streams`); beyond the
+cap, dials rotate onto a fresh session.
 
 Token ingestion also self-heals: when the just-pushed access token is rejected
 by Guardian (e.g. it was already near expiry), the container refreshes it with

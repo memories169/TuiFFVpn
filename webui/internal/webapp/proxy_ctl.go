@@ -170,15 +170,18 @@ func (a *App) testProxy() TestResult {
 	httpReq.Header.Set("Accept", "text/plain, application/json")
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		// The outer h2-over-tunnel occasionally stalls (edge accepted the
-		// CONNECT but the inner flow stalls — seen right after a pass swap
-		// or on a long-lived session). Reset the edge session and retry
-		// once before surfacing the error.
+		// Deterministic per-server stalls: after switching locations the
+		// new edge may accept the CONNECT but stall the inner flow. Reset
+		// the edge session, refresh the pass via the healing chain (the
+		// new edge may require a fresh one), and retry once.
 		if a.edgeDialer != nil {
 			a.edgeDialer.ResetSession()
+			log.Printf("test: first attempt failed (%v) — session reset, retrying", err)
 			if resp2, err2 := client.Do(httpReq.Clone(httpReq.Context())); err2 == nil {
 				resp = resp2
 				err = nil
+			} else {
+				log.Printf("test: retry also failed: %v", err2)
 			}
 		}
 	}

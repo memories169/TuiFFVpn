@@ -473,9 +473,15 @@ type edgeSession struct {
 	cc          *http2.ClientConn
 	tconn       *utls.UConn
 	insecureTLS bool
-	generation  int64 // bumped each time a NEW edge session is established
-	openTunnels int   // tunnels currently open on this session
+	generation  int64     // bumped each time a NEW edge session is established
+	openTunnels int       // tunnels currently open on this session
+	lastUsed    time.Time // last time a CONNECT was issued on this session
 }
+
+// maxStreamsPerSession caps concurrent tunnels per edge session (sing-box
+// default 32): when full, the next dial gets a fresh session — this also
+// prevents a single long-lived session from accumulating state.
+const maxStreamsPerSession = 32
 
 // Generation reports how many distinct edge sessions the dialer has built.
 // A stable exit IP needs this to stay at 1 across repeated dials.
@@ -490,7 +496,24 @@ func (s *edgeSession) get(ctx context.Context) (*http2.ClientConn, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.cc != nil && s.cc.CanTakeNewRequest() {
-		return s.cc, nil
+		// Session hygiene (mirrors sing-box's idle_timeout/keep_alive):
+		// a session idle for too long may be half-dead — the edge reaped
+		// it but our conn object doesn't know yet. Verify with a ping
+		// before handing it to a new CONNECT; a failed ping forces a
+		// rebuild so the CONNECT never stalls inside a zombie session.
+		idle := time.Since(s.lastUsed)
+		if idle > 25*time.Second {
+			pctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+			err := s.cc.Ping(pctx)
+			cancel()
+			if err != nil {
+				s.closeLocked()
+			}
+		}
+		if s.cc != nil && s.cc.CanTakeNewRequest() && s.openTunnels < maxStreamsPerSession {
+			s.lastUsed = time.Now()
+			return s.cc, nil
+		}
 	}
 	s.closeLocked()
 	proxyHost := net.JoinHostPort(s.host, fmt.Sprint(s.port))
@@ -597,6 +620,7 @@ func (s *edgeSession) dial(ctx context.Context, dst, proxyPass string) (net.Conn
 	}
 	s.mu.Lock()
 	s.openTunnels++
+	s.lastUsed = time.Now()
 	s.mu.Unlock()
 	tc := &http2TunnelConn{reader: resp.Body, writer: pw, cc: cc, onClose: func() {
 		s.mu.Lock()
@@ -613,6 +637,10 @@ type http2TunnelConn struct {
 	writer  io.WriteCloser
 	cc      *http2.ClientConn
 	onClose func()
+
+	deadlineMu sync.Mutex
+	deadline   time.Time
+	watchdog   *time.Timer
 }
 
 func (c *http2TunnelConn) Read(p []byte) (int, error)  { return c.reader.Read(p) }
@@ -623,6 +651,12 @@ func (c *http2TunnelConn) Write(p []byte) (int, error) { return c.writer.Write(p
 // closing the response body ends the other half. The underlying h2 session
 // stays alive for the next tunnel.
 func (c *http2TunnelConn) Close() error {
+	c.deadlineMu.Lock()
+	if c.watchdog != nil {
+		c.watchdog.Stop()
+		c.watchdog = nil
+	}
+	c.deadlineMu.Unlock()
 	_ = c.writer.Close()
 	_ = c.reader.Close()
 	if c.onClose != nil {
@@ -630,10 +664,48 @@ func (c *http2TunnelConn) Close() error {
 	}
 	return nil
 }
-func (c *http2TunnelConn) LocalAddr() net.Addr                { return nil }
-func (c *http2TunnelConn) RemoteAddr() net.Addr               { return nil }
-func (c *http2TunnelConn) SetDeadline(t time.Time) error      { return nil }
-func (c *http2TunnelConn) SetReadDeadline(t time.Time) error  { return nil }
-func (c *http2TunnelConn) SetWriteDeadline(t time.Time) error { return nil }
+func (c *http2TunnelConn) LocalAddr() net.Addr  { return nil }
+func (c *http2TunnelConn) RemoteAddr() net.Addr { return nil }
+
+// setDeadlineArmed arms a watchdog that closes the tunnel when the caller's
+// deadline passes. h2 streams have no per-stream deadlines; honoring the
+// caller's deadlines via a close-based watchdog makes stalls fail fast so
+// upper layers (TLS handshake, request) surface errors instead of hanging.
+func (c *http2TunnelConn) setDeadlineArmed(t time.Time) {
+	c.deadlineMu.Lock()
+	defer c.deadlineMu.Unlock()
+	if c.watchdog != nil {
+		c.watchdog.Stop()
+		c.watchdog = nil
+	}
+	if t.IsZero() {
+		c.deadline = time.Time{}
+		return
+	}
+	c.deadline = t
+	d := time.Until(t)
+	if d <= 0 {
+		_ = c.Close()
+		return
+	}
+	c.watchdog = time.AfterFunc(d, func() {
+		_ = c.Close()
+	})
+}
+
+func (c *http2TunnelConn) SetDeadline(t time.Time) error {
+	c.setDeadlineArmed(t)
+	return nil
+}
+
+func (c *http2TunnelConn) SetReadDeadline(t time.Time) error {
+	c.setDeadlineArmed(t)
+	return nil
+}
+
+func (c *http2TunnelConn) SetWriteDeadline(t time.Time) error {
+	c.setDeadlineArmed(t)
+	return nil
+}
 
 // http2TunnelConn adapts an HTTP/2 CONNECT response body to net.Conn.
