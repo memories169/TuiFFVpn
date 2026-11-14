@@ -1,3 +1,5 @@
+[![Build Docker image](https://github.com/memories169/TuiFFVpn/actions/workflows/build-docker.yml/badge.svg)](https://github.com/memories169/TuiFFVpn/actions/workflows/build-docker.yml)
+
 # 🦊 Firefox VPN Web Console
 
 A **web UI** to log in with a Firefox account and pick a VPN server/location,
@@ -195,6 +197,21 @@ Troubleshooting the PC path:
   `FXVPN_INGEST_KEY` in docker-compose.yml.
 - **"không gọi được container"** — CONSOLE_URL host/port wrong, or the
   console port is not published when the PC is a different machine.
+
+### Pull the prebuilt image (GHCR)
+
+CI publishes the image to GitHub Container Registry on every push to `main`
+and on `v*` tags:
+
+```bash
+docker pull ghcr.io/memories169/tuiffvpn:latest
+# or pin a release:
+docker pull ghcr.io/memories169/tuiffvpn:1.0.0
+```
+
+The GHCR package is private by default if the repo is private — either make
+the package public (Package settings → Change visibility) or run
+`docker login ghcr.io` with a PAT that has `read:packages`.
 
 ## Build & run
 
