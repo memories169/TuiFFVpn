@@ -264,7 +264,15 @@ $('test-conn').addEventListener('click', async () => {
   $('test-result').textContent = 'Đang kiểm tra…';
   const res = await api('test');
   if (res.ok) {
-    $('test-result').textContent = 'Kết nối OK qua: ' + res.server + '\nExit IP: ' + res.exit_ip + ' (' + res.country + ')\nĐộ trễ: ' + res.latency_ms + ' ms';
+    let msg = 'Kết nối OK qua: ' + res.server + '\nExit IP: ' + res.exit_ip + ' (' + res.country + ')';
+    if (res.edge_sessions != null) msg += '\nEdge sessions: ' + res.edge_sessions;
+    if (res.second_ip) {
+      msg += res.second_ip === res.exit_ip
+        ? '\nIP ổn định giữa các tunnel trong session ✓'
+        : '\n⚠ IP đổi giữa các tunnel trong cùng session: ' + res.exit_ip + ' → ' + res.second_ip;
+    }
+    msg += '\nĐộ trễ: ' + res.latency_ms + ' ms';
+    $('test-result').textContent = msg;
   } else {
     $('test-result').textContent = 'Lỗi: ' + (res.error || 'test failed');
   }

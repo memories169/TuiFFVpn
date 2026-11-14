@@ -91,6 +91,16 @@ The rotator runs the same healing path every 30 minutes, and every manual
 account switch does too, so a newly added account converges to a working
 proxy pass without manual activation.
 
+### Automatic re-connect on container restart
+
+The selected server persists in `state.json`, and on boot the console
+**automatically reconnects** the proxy to it: it runs the full healing chain
+(refresh expired tokens, activate the entitlement if needed, fetch a fresh
+proxy pass) and starts the SOCKS5 listener before the first rotation pass.
+Failures (e.g. Fastly CAPTCHA on the token refresh from this network) are
+logged and the UI keeps the last selection — re-selecting the server in the
+Chọn location tab retries with the same chain once tokens are healthy.
+
 ### Automatic rotation
 
 A background rotator runs every 30 minutes and:

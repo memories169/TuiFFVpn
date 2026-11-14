@@ -52,6 +52,9 @@ type App struct {
 	// race when refreshed concurrently — the loser would overwrite the
 	// stored refresh token with a revoked one).
 	refreshMu sync.Mutex
+	// edgeDialer is the live MASQUE dialer; its Generation() reports how
+	// many distinct edge sessions have been built (stability diagnostics).
+	edgeDialer *proxy.MasqueDialer
 }
 
 // New builds an App.

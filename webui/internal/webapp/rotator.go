@@ -44,14 +44,42 @@ func (a *App) startRotator() {
 	go func() {
 		t := time.NewTicker(defaultRotateSettings.Interval)
 		defer t.Stop()
-		// Evaluate once shortly after boot so a stale token gets refreshed
-		// before the first proxy use.
-		time.Sleep(5 * time.Second)
+		// Restore the last-selected server before the first rotation pass so
+		// the proxy is reachable as soon as possible after a container
+		// restart (the selected server persists in state.json).
+		a.restoreSelectedOnBoot()
 		a.rotateOnce()
 		for range t.C {
 			a.rotateOnce()
 		}
 	}()
+}
+
+// restoreSelectedOnBoot restarts the proxy on the persisted server selection
+// (if any) after a container restart. Runs in the background: failures are
+// logged and the user can re-select from the UI. The full healing chain
+// (token refresh, entitlement activation, pass fetch) runs as part of it.
+func (a *App) restoreSelectedOnBoot() {
+	a.mu.Lock()
+	sel := a.Store.Selected
+	hasAccount := a.Store.ActiveAccount() != nil
+	a.mu.Unlock()
+
+	if !hasAccount {
+		log.Printf("boot: no account yet — skip proxy restore (add an account via the userscript)")
+		return
+	}
+	if sel.ServerHost == "" || sel.ServerPort == 0 {
+		log.Printf("boot: no server selected yet — skip proxy restore")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if err := a.restartProxyOnActive(ctx, sel.ServerHost, sel.ServerPort); err != nil {
+		log.Printf("boot: auto-connect to %s:%d failed: %v (re-select the server in the UI once tokens are healthy)", sel.ServerHost, sel.ServerPort, err)
+		return
+	}
+	log.Printf("boot: proxy restored on %s:%d (last selected server)", sel.ServerHost, sel.ServerPort)
 }
 
 // rotateOnce evaluates and performs one rotation if needed.

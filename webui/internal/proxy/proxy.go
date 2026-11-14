@@ -270,10 +270,24 @@ func readRequest(r *bufio.Reader) (byte, string, error) {
 // verification against a local mock edge; production never does).
 type DialerOption func(*edgeSession)
 
+// masqueDialer is HTTP2Dialer's return type: a Dialer that also reports
+// edge-session diagnostics.
+type MasqueDialer struct {
+	fn Dialer
+	s  *edgeSession
+}
+
+func (m *MasqueDialer) Dial(ctx context.Context, dst string) (net.Conn, error) {
+	return m.fn(ctx, dst)
+}
+
+// Generation reports how many distinct edge sessions have been built.
+func (m *MasqueDialer) Generation() int64 { return m.s.Generation() }
+
 // WithInsecureTLS skips edge-certificate verification. Test-only.
 func WithInsecureTLS() DialerOption { return func(s *edgeSession) { s.insecureTLS = true } }
 
-func HTTP2Dialer(host string, port int, proxyPass string, bearerProvider func() (string, error), opts ...DialerOption) Dialer {
+func HTTP2Dialer(host string, port int, proxyPass string, bearerProvider func() (string, error), opts ...DialerOption) *MasqueDialer {
 	s := &edgeSession{host: host, port: port, transport: &http2.Transport{
 		// Detect a dead idle edge session quickly: the edge sends PING when
 		// the stream stays idle; if no ack comes back the session is marked
@@ -285,7 +299,8 @@ func HTTP2Dialer(host string, port int, proxyPass string, bearerProvider func() 
 	for _, o := range opts {
 		o(s)
 	}
-	return func(ctx context.Context, dst string) (net.Conn, error) {
+	m := &MasqueDialer{s: s}
+	m.fn = func(ctx context.Context, dst string) (net.Conn, error) {
 		conn, err := s.dial(ctx, dst, proxyPass)
 		if err == nil {
 			return conn, nil
@@ -304,6 +319,7 @@ func HTTP2Dialer(host string, port int, proxyPass string, bearerProvider func() 
 		conn, err = s.dial(ctx, dst, proxyPass)
 		return conn, err
 	}
+	return m
 }
 
 // edgeSession is a single reusable MASQUE edge session (utls + http2).
@@ -315,6 +331,15 @@ type edgeSession struct {
 	cc          *http2.ClientConn
 	tconn       *utls.UConn
 	insecureTLS bool
+	generation  int64 // bumped each time a NEW edge session is established
+}
+
+// Generation reports how many distinct edge sessions the dialer has built.
+// A stable exit IP needs this to stay at 1 across repeated dials.
+func (s *edgeSession) Generation() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.generation
 }
 
 // get returns the live edge session, establishing one if absent or dead.
@@ -352,6 +377,7 @@ func (s *edgeSession) get(ctx context.Context) (*http2.ClientConn, error) {
 	}
 	s.cc = cc
 	s.tconn = tconn
+	s.generation++
 	return cc, nil
 }
 

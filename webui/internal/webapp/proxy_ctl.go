@@ -36,6 +36,14 @@ type TestResult struct {
 	Country   string `json:"country,omitempty"`
 	LatencyMS int64  `json:"latency_ms,omitempty"`
 	Server    string `json:"server,omitempty"`
+	// EdgeSessions reports how many distinct MASQUE edge sessions the dialer
+	// has built since startProxy — stable exit IP needs it to stay at 1
+	// across repeated tests (rebuilds rotate the egress IP).
+	EdgeSessions int64 `json:"edge_sessions,omitempty"`
+	// SecondIP is a second trace fetched through a SEPARATE tunnel on the
+	// same edge session. Equal to ExitIP when the edge pins the egress to
+	// the session; different means the edge assigns egress per tunnel.
+	SecondIP string `json:"second_ip,omitempty"`
 }
 
 // startProxy (re)starts the SOCKS5 proxy against the given server with the
@@ -67,8 +75,8 @@ func (a *App) startProxy(host string, port int, bearer string) {
 		a.mu.Unlock()
 		return pass.RawToken, nil
 	}
-	dial := proxy.HTTP2Dialer(host, port, bearer, bearerProvider)
-	srv := &proxy.Server{Listen: a.ProxyAddr, Dial: dial}
+	a.edgeDialer = proxy.HTTP2Dialer(host, port, bearer, bearerProvider)
+	srv := &proxy.Server{Listen: a.ProxyAddr, Dial: a.edgeDialer.Dial}
 	a.proxySrv = srv
 	go func() {
 		if err := srv.ListenAndServe(); err != nil {
@@ -163,6 +171,24 @@ func (a *App) testProxy() TestResult {
 	latency := time.Since(start).Milliseconds()
 
 	ip, country := parseTrace(string(body))
+
+	// Second trace through a separate tunnel on the same edge session.
+	sessions := int64(0)
+	if a.edgeDialer != nil {
+		sessions = a.edgeDialer.Generation()
+	}
+	secondIP := ""
+	if ip != "" {
+		time.Sleep(200 * time.Millisecond)
+		if resp2, err2 := client.Do(httpReq.Clone(httpReq.Context())); err2 == nil {
+			b2, _ := io.ReadAll(io.LimitReader(resp2.Body, 64<<10))
+			resp2.Body.Close()
+			secondIP, _ = parseTrace(string(b2))
+		}
+		if a.edgeDialer != nil {
+			sessions = a.edgeDialer.Generation()
+		}
+	}
 	if ip == "" {
 		// The tunnel is up but the inner response is not a Cloudflare trace.
 		// Common causes: the edge cuts the inner stream for a quota-burned
@@ -174,7 +200,7 @@ func (a *App) testProxy() TestResult {
 		}
 		return TestResult{OK: false, Error: "tunnel connected but no exit IP returned; inner response: " + snippet, Server: server, LatencyMS: latency}
 	}
-	return TestResult{OK: true, ExitIP: ip, Country: country, LatencyMS: latency, Server: server}
+	return TestResult{OK: true, ExitIP: ip, Country: country, LatencyMS: latency, Server: server, EdgeSessions: sessions, SecondIP: secondIP}
 }
 
 func parseTrace(body string) (ip, country string) {
