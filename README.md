@@ -155,6 +155,12 @@ dialer atomically — subsequent CONNECTs carry the fresh pass on the
 This is the same `session=retained` behavior as the reference client's
 `adoptPass → UpdateToken` path.
 
+The CONNECT handshake itself is bounded with a 12-second deadline inside
+the dialer: a session that stalls (edge accepted the stream but never
+answers — occasionally seen right after a pass swap) fails fast and the
+dialer retries once on a guaranteed-fresh session, instead of hanging
+until the caller's outer timeout.
+
 Token ingestion also self-heals: when the just-pushed access token is rejected
 by Guardian (e.g. it was already near expiry), the container refreshes it with
 the account's refresh token, provisions the entitlement via Guardian

@@ -410,6 +410,9 @@ func HTTP2Dialer(host string, port int, proxyPass string, bearerProvider func() 
 			}
 			m.UpdatePass(fresh)
 		}
+		// Force a FRESH session for the retry — the first attempt already
+		// reset() via dial(), but get() may reuse a borderline session; a
+		// guaranteed-new session is the reliable recovery.
 		s.reset()
 		conn, err = s.dial(ctx, dst, m.currentPass())
 		return conn, err
@@ -555,11 +558,19 @@ func (s *edgeSession) dial(ctx context.Context, dst, proxyPass string) (net.Conn
 		auth = "Bearer " + auth
 	}
 	req.Header.Set("Proxy-Authorization", auth)
+	// Bound the CONNECT handshake (headers) with its own deadline: a stalled
+	// session must fail fast here — reset + retry — instead of hanging until
+	// the caller's outer timeout ("context deadline exceeded … awaiting
+	// headers"). Once the 2xx headers arrive, the tunnel inherits the
+	// caller's ctx for its lifetime.
+	rtCtx, rtCancel := context.WithTimeout(ctx, 12*time.Second)
+	req = req.WithContext(rtCtx)
 	resp, err := cc.RoundTrip(req)
+	rtCancel()
 	if err != nil {
 		pw.Close()
 		// A failed RoundTrip often means the shared session died; drop it so
-		// the next dial establishes a fresh one.
+		// the retry (and the next dial) establishes a fresh one.
 		s.reset()
 		return nil, err
 	}
