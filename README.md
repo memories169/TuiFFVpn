@@ -143,10 +143,14 @@ idle sessions after a few minutes).
 Session hygiene mirrors sing-box: before reusing a session idle for more
 than 25 s, the dialer pings it — a zombie session fails the ping and is
 replaced synchronously, so a CONNECT never stalls inside a half-dead
-session. Pass renewal swaps the pass into the dialer atomically without
-touching any session (`session=retained`), and dead sessions found by
-failed CONNECTs are dropped — not closed under live traffic — with the
-retry landing on another pooled session or a fresh one.
+session. The session's busy counter covers **in-flight handshakes** too
+(reserved before the CONNECT starts, released on tunnel close) — keepalive
+and pruning therefore never reap a session whose CONNECT is still
+negotiating, which previously surfaced as `io: read/write on closed pipe`
+under concurrent load. Pass renewal swaps the pass into the dialer
+atomically without touching any session (`session=retained`), and dead
+sessions found by failed CONNECTs are dropped — not closed under live
+traffic — with the retry landing on another pooled session or a fresh one.
 
 The CONNECT handshake itself is bounded with a 12-second budget inside the
 dialer by racing the CONNECT against a timer — a session that stalls (edge

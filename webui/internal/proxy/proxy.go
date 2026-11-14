@@ -313,16 +313,18 @@ func (m *MasqueDialer) SetRenewProvider(provider func() (string, error), expires
 	go m.renewalLoop(expiresAt)
 }
 
-// ResetSession tears every pooled edge session down unconditionally
-// (diagnostics and the test-connection retry path); the next dial builds
-// fresh sessions.
+// ResetSession tears down every pooled edge session that has no in-flight
+// traffic (diagnostics and the test-connection retry path); sessions with
+// open tunnels survive for the live connections using them, and the next
+// dial builds fresh sessions.
 func (m *MasqueDialer) ResetSession() {
 	m.pool.mu.Lock()
-	sessions := m.pool.sessions
-	m.pool.sessions = nil
+	sessions := append([]*edgeSession(nil), m.pool.sessions...)
 	m.pool.mu.Unlock()
 	for _, ses := range sessions {
-		ses.reset()
+		if ses.canReset() {
+			ses.reset()
+		}
 	}
 }
 
@@ -562,14 +564,19 @@ func (s *edgeSession) usableLocked() bool {
 	}
 	// Session hygiene (mirrors sing-box idle_timeout): a session idle for
 	// too long may be half-dead — the edge reaped it but our conn object
-	// doesn't know. Verify with a ping BEFORE handing it to a new CONNECT;
-	// a failed ping marks the session dead so acquire() skips/rebuilds.
+	// doesn't know. Verify with a ping BEFORE handing it to a new CONNECT.
+	// A failed ping means "do not use this session for this dial" — but
+	// NEVER close it while tunnels/handshakes are in flight: closing would
+	// kill those streams ("closed pipe" under sing-box load). An idle
+	// session that fails the ping is closed outright.
 	if idle := time.Since(s.lastUsed); idle > 25*time.Second {
 		pctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		err := s.cc.Ping(pctx)
 		cancel()
 		if err != nil {
-			s.closeLocked()
+			if s.openTunnels == 0 {
+				s.closeLocked()
+			}
 			return false
 		}
 		s.lastUsed = time.Now()
@@ -702,6 +709,24 @@ func (m *MasqueDialer) dial(ctx context.Context, dst, proxyPass string) (net.Con
 		auth = "Bearer " + auth
 	}
 	req.Header.Set("Proxy-Authorization", auth)
+	// Reserve the session BEFORE starting the CONNECT: keepalive/prune must
+	// never reap a session with an in-flight handshake (the busy counter
+	// only counted established tunnels before — an in-flight CONNECT was
+	// invisible, and a concurrent reap killed it with "closed pipe").
+	ses.mu.Lock()
+	ses.openTunnels++
+	ses.lastUsed = time.Now()
+	ses.mu.Unlock()
+	tunnelClosed := false
+	release := func() {
+		ses.mu.Lock()
+		if !tunnelClosed {
+			tunnelClosed = true
+			ses.openTunnels--
+		}
+		ses.mu.Unlock()
+	}
+
 	// Bound the CONNECT handshake (waiting for response headers) with its
 	// own 12s budget — a stalled session must fail fast here instead of
 	// hanging until the caller's outer timeout.
@@ -726,6 +751,7 @@ func (m *MasqueDialer) dial(ctx context.Context, dst, proxyPass string) (net.Con
 	case r := <-rtCh:
 		if r.err != nil {
 			pw.Close()
+			release()
 			// Mark the session dead so acquire() won't reuse it; tunnels in
 			// flight on it (if any) keep their streams until they fail.
 			ses.mu.Lock()
@@ -736,24 +762,17 @@ func (m *MasqueDialer) dial(ctx context.Context, dst, proxyPass string) (net.Con
 		resp = r.resp
 	case <-time.After(12 * time.Second):
 		pw.Close()
+		release()
 		ses.mu.Lock()
 		ses.closeLocked()
 		ses.mu.Unlock()
 		return nil, errors.New("connect handshake timed out (12s) — session dropped")
 	}
-	ses.mu.Lock()
-	ses.openTunnels++
-	ses.lastUsed = time.Now()
-	ses.mu.Unlock()
 	tc := &http2TunnelConn{
-		reader: resp.Body,
-		writer: pw,
-		cc:     ses.cc,
-		onClose: func() {
-			ses.mu.Lock()
-			ses.openTunnels--
-			ses.mu.Unlock()
-		},
+		reader:  resp.Body,
+		writer:  pw,
+		cc:      ses.cc,
+		onClose: release,
 	}
 	return tc, nil
 }
