@@ -1,13 +1,18 @@
 # Local toolchains and caches must not be sent to the Docker build context.
-.toolchain/
-.toolcache/
-bin/
-gen/
-data/
-fxvpn-webui
+# Patterns are ANCHORED to the context root ('/...') so they can never match
+# nested source paths (the unanchored 'fxvpn-webui' pattern previously
+# excluded webui/cmd/fxvpn-webui/ and broke the image build).
+/.toolchain/
+/.toolcache/
+/bin/
+/gen/
+/data/
+/fxvpn-webui
+/fxvpn-token
 *.log
-.git/
-.gitignore
+/.git/
+/.gitignore
 Dockerfile
 docker-compose.yml
 README.md
+

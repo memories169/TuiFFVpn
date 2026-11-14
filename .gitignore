@@ -1,15 +1,16 @@
-# Build artifacts
-fxvpn-webui
-fxvpn-token
+# Build artifacts (anchored to repo root so they can never match
+# nested source paths like webui/cmd/fxvpn-webui/)
+/fxvpn-webui
+/fxvpn-token
 *.log
 
 # Local toolchain and caches (Go + module/build caches)
-.toolchain/
-.toolcache/
+/.toolchain/
+/.toolcache/
 
 # Runtime state
-data/
-state.json
+/data/
+/state.json
 
 # Editor
 .idea/
