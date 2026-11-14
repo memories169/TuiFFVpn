@@ -139,16 +139,21 @@ dies or the proxy pass changes; each SOCKS5 client tunnel still gets its own
 HTTP/2 stream, closed independently.
 
 Dead-session healing: the h2 session carries keep-alive PINGs
-(`ReadIdleTimeout` 30s / `PingTimeout` 15s), so an edge that silently drops
-idle sessions is detected instead of hanging. A dial that hits a dead
-session (or any transient CONNECT failure) rebuilds the session and retries
-once transparently — the client just sees a slightly slower first connect
-after a long idle period. The in-band pass refresh is deliberately
-**non-destructive**: it refreshes tokens and the proxy pass in place and
-never restarts the SOCKS listener under an in-flight connection (an earlier
-version closed the listener inside the refresh path, which killed the very
-connection that triggered it with
-`http2: client conn could not be established`).
+(`ReadIdleTimeout` 30s / `PingTimeout` 15s) plus a background keepalive
+loop that pings the live edge session every 45 s even with no active
+streams (Mozilla edges reap idle sessions after a few minutes —
+diagnostics confirmed the exit IP rotates exactly when the session count
+bumps). A failed ping drops the session; the next dial rebuilds it.
+
+Pass renewal without session churn: the Guardian proxy pass has a shorter
+TTL than you might re-trigger manually, and the edge tears sessions down
+for expired auth. A renewal loop therefore refreshes the pass **2 minutes
+before its expiry** (lead time mirrors the reference client's
+`proxyPassRenewLead`) through the same healing chain and swaps it into the
+dialer atomically — subsequent CONNECTs carry the fresh pass on the
+**same** edge session, preserving the egress IP across pass rotations.
+This is the same `session=retained` behavior as the reference client's
+`adoptPass → UpdateToken` path.
 
 Token ingestion also self-heals: when the just-pushed access token is rejected
 by Guardian (e.g. it was already near expiry), the container refreshes it with

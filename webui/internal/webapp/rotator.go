@@ -237,7 +237,7 @@ func (a *App) restartProxyOnActive(ctx context.Context, host string, port int) e
 	a.mu.Lock()
 	a.currentPass = pass.RawToken
 	a.mu.Unlock()
-	a.startProxy(host, port, pass.Bearer())
+	a.startProxy(host, port, pass.Bearer(), pass.ExpiresAt())
 	return nil
 }
 

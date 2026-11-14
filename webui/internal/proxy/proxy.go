@@ -277,15 +277,96 @@ type MasqueDialer struct {
 	s  *edgeSession
 	// keepaliveStop ends the session keepalive loop on Close.
 	keepaliveStop chan struct{}
+
+	// passMu guards proxyPass (the current raw pass used by new CONNECTs).
+	passMu    sync.Mutex
+	proxyPass string
+	// renewProvider fetches a fresh pass BEFORE the current one expires so
+	// the edge never tears down the session for auth — preserving the egress
+	// IP. Mirrors firefox-vpn-client's runRenewalLoop (renew lead 2 min).
+	renewProvider func() (string, error)
+	// renewStop ends the renewal loop on Close.
+	renewStop chan struct{}
 }
 
-// Close stops the keepalive loop and drops the edge session.
+// SetRenewProvider installs the proactive pass-renewal provider. The
+// provider (the webapp's refreshProxyPass healing chain) is invoked ~2 min
+// before the current pass expires; the fresh pass is swapped in without
+// touching the edge session.
+func (m *MasqueDialer) SetRenewProvider(provider func() (string, error), expiresAt time.Time) {
+	m.renewProvider = provider
+	if expiresAt.IsZero() {
+		return
+	}
+	if m.renewStop != nil {
+		select {
+		case <-m.renewStop:
+		default:
+			close(m.renewStop)
+		}
+	}
+	m.renewStop = make(chan struct{})
+	go m.renewalLoop(expiresAt)
+}
+
+// UpdatePass swaps the current pass atomically; new CONNECTs use it
+// immediately on the SAME edge session.
+func (m *MasqueDialer) UpdatePass(raw string) {
+	m.passMu.Lock()
+	m.proxyPass = raw
+	m.passMu.Unlock()
+}
+
+func (m *MasqueDialer) currentPass() string {
+	m.passMu.Lock()
+	defer m.passMu.Unlock()
+	return m.proxyPass
+}
+
+// renewalLoop renews the pass 2 minutes before it expires, indefinitely.
+func (m *MasqueDialer) renewalLoop(expiresAt time.Time) {
+	for {
+		delay := time.Until(expiresAt.Add(-2 * time.Minute))
+		if delay <= 0 {
+			delay = time.Second
+		}
+		select {
+		case <-m.renewStop:
+			return
+		case <-time.After(delay):
+		}
+		if m.renewProvider == nil {
+			return
+		}
+		np, err := m.renewProvider()
+		if err != nil {
+			// Retry shortly; the in-band 401 path still covers us.
+			select {
+			case <-m.renewStop:
+				return
+			case <-time.After(30 * time.Second):
+			}
+			continue
+		}
+		expiresAt = time.Now().Add(30 * time.Minute) // Guardian pass TTL guard
+		m.UpdatePass(np)
+	}
+}
+
+// Close stops the keepalive + renewal loops and drops the edge session.
 func (m *MasqueDialer) Close() {
 	if m.keepaliveStop != nil {
 		select {
 		case <-m.keepaliveStop:
 		default:
 			close(m.keepaliveStop)
+		}
+	}
+	if m.renewStop != nil {
+		select {
+		case <-m.renewStop:
+		default:
+			close(m.renewStop)
 		}
 	}
 	m.s.reset()
@@ -313,9 +394,9 @@ func HTTP2Dialer(host string, port int, proxyPass string, bearerProvider func() 
 	for _, o := range opts {
 		o(s)
 	}
-	m := &MasqueDialer{s: s}
+	m := &MasqueDialer{s: s, proxyPass: proxyPass}
 	m.fn = func(ctx context.Context, dst string) (net.Conn, error) {
-		conn, err := s.dial(ctx, dst, proxyPass)
+		conn, err := s.dial(ctx, dst, m.currentPass())
 		if err == nil {
 			return conn, nil
 		}
@@ -327,10 +408,10 @@ func HTTP2Dialer(host string, port int, proxyPass string, bearerProvider func() 
 			if perr != nil {
 				return nil, fmt.Errorf("proxy pass refresh failed: %w (first error: %v)", perr, err)
 			}
-			proxyPass = fresh
+			m.UpdatePass(fresh)
 		}
 		s.reset()
-		conn, err = s.dial(ctx, dst, proxyPass)
+		conn, err = s.dial(ctx, dst, m.currentPass())
 		return conn, err
 	}
 	// Background keepalive: ping the edge session while it is idle so the

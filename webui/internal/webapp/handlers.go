@@ -102,7 +102,7 @@ func (a *App) handleSelect(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	a.currentPass = pass.RawToken
 	a.mu.Unlock()
-	a.startProxy(req.ServerHost, req.ServerPort, pass.Bearer())
+	a.startProxy(req.ServerHost, req.ServerPort, pass.Bearer(), pass.ExpiresAt())
 
 	log.Printf("webui: selected %s (%s/%s) server=%s:%d", req.CountryName, req.CountryCode, req.CityName, req.ServerHost, req.ServerPort)
 	writeJSON(w, 200, map[string]any{"ok": true, "server": req.ServerHost, "port": req.ServerPort})

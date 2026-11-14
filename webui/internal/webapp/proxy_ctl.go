@@ -56,7 +56,7 @@ type TestResult struct {
 // that triggered the refresh, killing it with "http2: client conn could
 // not be established". It only refreshes tokens/pass in place and hands
 // back the raw pass.
-func (a *App) startProxy(host string, port int, bearer string) {
+func (a *App) startProxy(host string, port int, bearer string, passExpiry time.Time) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.edgeDialer != nil {
@@ -77,9 +77,16 @@ func (a *App) startProxy(host string, port int, bearer string) {
 		a.mu.Lock()
 		a.currentPass = pass.RawToken
 		a.mu.Unlock()
+		// Keep the dialer's current pass in sync (renewal loop may also
+		// write it; last writer wins with a fresh valid pass either way).
+		a.edgeDialer.UpdatePass(pass.RawToken)
 		return pass.RawToken, nil
 	}
 	a.edgeDialer = proxy.HTTP2Dialer(host, port, bearer, bearerProvider)
+	// Proactive pass renewal: refresh the pass ~2 min before it expires so
+	// the edge never tears the session down for auth — the exit IP stays
+	// pinned to the session across pass rotations.
+	a.edgeDialer.SetRenewProvider(bearerProvider, passExpiry)
 	srv := &proxy.Server{Listen: a.ProxyAddr, Dial: a.edgeDialer.Dial}
 	a.proxySrv = srv
 	go func() {
