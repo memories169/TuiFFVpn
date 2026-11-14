@@ -172,13 +172,14 @@ session with tunnels in flight (a failed liveness ping is tolerated while
 traffic is active — h2 streams keep flowing), and Test connection resets
 the edge session and retries once before surfacing an error.
 
-Tunnel deadlines are honored: `http2TunnelConn` implements
-`SetDeadline`/`SetReadDeadline`/`SetWriteDeadline` with a close-based
-watchdog (h2 streams have no per-stream deadlines), so upper-layer stalls
-inside the tunnel surface as fast errors to the retry chain instead of
-hanging on a no-op deadline. Individual edge hosts can misbehave (accept
-CONNECT but stall the inner flow); if a location consistently fails the
-test after an automatic retry, pick a different edge from the same city.
+Tunnel streams reject deadlines (`SetDeadline` et al. return an error,
+mirroring the reference client): h2 CONNECT streams have no per-stream
+deadlines, and a close-based deadline watchdog corrupted subsequent
+operations on the same tunnel (`io: read/write on closed pipe`) when the
+outer transport's generous per-operation deadlines expired on
+slow-but-healthy tunnels. Stalls are handled at their proper layers — the
+dialer's handshake race, session keepalive pings, the age cap, and the
+caller's `Client.Timeout`.
 
 Session hygiene mirrors sing-box (which FoxyVPN uses as its tunnel engine):
 before reusing a session idle for more than 25 s, the dialer pings it — a

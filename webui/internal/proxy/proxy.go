@@ -799,10 +799,6 @@ type http2TunnelConn struct {
 	writer  io.WriteCloser
 	cc      *http2.ClientConn
 	onClose func()
-
-	deadlineMu sync.Mutex
-	deadline   time.Time
-	watchdog   *time.Timer
 }
 
 func (c *http2TunnelConn) Read(p []byte) (int, error)  { return c.reader.Read(p) }
@@ -813,12 +809,6 @@ func (c *http2TunnelConn) Write(p []byte) (int, error) { return c.writer.Write(p
 // closing the response body ends the other half. The underlying h2 session
 // stays alive for the next tunnel.
 func (c *http2TunnelConn) Close() error {
-	c.deadlineMu.Lock()
-	if c.watchdog != nil {
-		c.watchdog.Stop()
-		c.watchdog = nil
-	}
-	c.deadlineMu.Unlock()
 	_ = c.writer.Close()
 	_ = c.reader.Close()
 	if c.onClose != nil {
@@ -829,45 +819,19 @@ func (c *http2TunnelConn) Close() error {
 func (c *http2TunnelConn) LocalAddr() net.Addr  { return nil }
 func (c *http2TunnelConn) RemoteAddr() net.Addr { return nil }
 
-// setDeadlineArmed arms a watchdog that closes the tunnel when the caller's
-// deadline passes. h2 streams have no per-stream deadlines; honoring the
-// caller's deadlines via a close-based watchdog makes stalls fail fast so
-// upper layers (TLS handshake, request) surface errors instead of hanging.
-func (c *http2TunnelConn) setDeadlineArmed(t time.Time) {
-	c.deadlineMu.Lock()
-	defer c.deadlineMu.Unlock()
-	if c.watchdog != nil {
-		c.watchdog.Stop()
-		c.watchdog = nil
-	}
-	if t.IsZero() {
-		c.deadline = time.Time{}
-		return
-	}
-	c.deadline = t
-	d := time.Until(t)
-	if d <= 0 {
-		_ = c.Close()
-		return
-	}
-	c.watchdog = time.AfterFunc(d, func() {
-		_ = c.Close()
-	})
-}
+// SetDeadline mirrors firefox-vpn-client's tunnelConn: deadlines are not
+// supported for CONNECT tunnel streams. A close-based watchdog was tried
+// here and caused "io: read/write on closed pipe" — the outer transport
+// sets generous per-operation deadlines (TLS handshake, response header)
+// that legitimately expire on slow-but-healthy tunnels, and closing the
+// pipe then corrupted subsequent operations on the same tunnel. Stalls are
+// handled at their proper layers instead: the 12s CONNECT handshake race
+// in the dialer, session keepalive pings, the session age cap, and the
+// caller's own Client.Timeout.
+var errTunnelDeadline = errors.New("deadlines are not supported for HTTP CONNECT tunnel streams")
 
-func (c *http2TunnelConn) SetDeadline(t time.Time) error {
-	c.setDeadlineArmed(t)
-	return nil
-}
-
-func (c *http2TunnelConn) SetReadDeadline(t time.Time) error {
-	c.setDeadlineArmed(t)
-	return nil
-}
-
-func (c *http2TunnelConn) SetWriteDeadline(t time.Time) error {
-	c.setDeadlineArmed(t)
-	return nil
-}
+func (c *http2TunnelConn) SetDeadline(time.Time) error      { return errTunnelDeadline }
+func (c *http2TunnelConn) SetReadDeadline(time.Time) error  { return errTunnelDeadline }
+func (c *http2TunnelConn) SetWriteDeadline(time.Time) error { return errTunnelDeadline }
 
 // http2TunnelConn adapts an HTTP/2 CONNECT response body to net.Conn.
