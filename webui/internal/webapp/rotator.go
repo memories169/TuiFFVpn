@@ -156,16 +156,24 @@ type AccountView struct {
 
 // restartProxyOnActive fetches a fresh proxy pass for the active account and
 // restarts the SOCKS5 proxy against the given server.
-func (a *App) restartProxyOnActive(ctx context.Context, host string, port int) error {
+// refreshProxyPass fetches a fresh Guardian proxy pass for the active
+// account using the full healing chain (valid access token → refresh on
+// invalid → activate on invalid). It does NOT touch the running proxy or
+// its listener — safe to call from inside a dial's bearerProvider.
+func (a *App) refreshProxyPass(ctx context.Context) (*guardian.ProxyPass, error) {
 	token, err := a.validAccessToken(ctx)
 	if err != nil || token == "" {
-		return err
+		return nil, err
 	}
 	gc := &guardian.Client{Endpoint: a.Guardian, Token: token}
 	pass, err := gc.FetchProxyPass(ctx)
 	if errors.Is(err, guardian.ErrTokenInvalid) {
-		// Refresh once more and activate if needed.
-		if a.refreshAccount(ctx, activeEmail(a)) {
+		// Provision with the current token first (activate is what registers
+		// a fresh account for the free tier), then refresh+retry.
+		if _, aerr := gc.Activate(ctx); aerr == nil {
+			pass, err = gc.FetchProxyPass(ctx)
+		}
+		if errors.Is(err, guardian.ErrTokenInvalid) && a.refreshAccount(ctx, activeEmail(a)) {
 			nt, _ := a.validAccessToken(ctx)
 			gc = &guardian.Client{Endpoint: a.Guardian, Token: nt}
 			pass, err = gc.FetchProxyPass(ctx)
@@ -177,12 +185,8 @@ func (a *App) restartProxyOnActive(ctx context.Context, host string, port int) e
 		}
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
-	a.mu.Lock()
-	a.currentPass = pass.RawToken
-	a.mu.Unlock()
-	a.startProxy(host, port, pass.Bearer())
 	a.mu.Lock()
 	if ac := a.Store.ActiveAccount(); ac != nil {
 		ac.QuotaMax = pass.QuotaMax
@@ -191,6 +195,21 @@ func (a *App) restartProxyOnActive(ctx context.Context, host string, port int) e
 		_ = a.Store.Save()
 	}
 	a.mu.Unlock()
+	return pass, nil
+}
+
+// restartProxyOnActive re-fetches a proxy pass and restarts the SOCKS proxy
+// against the given server. Callers outside the dial path only — it replaces
+// a.proxySrv (closing the listener).
+func (a *App) restartProxyOnActive(ctx context.Context, host string, port int) error {
+	pass, err := a.refreshProxyPass(ctx)
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.currentPass = pass.RawToken
+	a.mu.Unlock()
+	a.startProxy(host, port, pass.Bearer())
 	return nil
 }
 

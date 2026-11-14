@@ -133,7 +133,12 @@ Dead-session healing: the h2 session carries keep-alive PINGs
 idle sessions is detected instead of hanging. A dial that hits a dead
 session (or any transient CONNECT failure) rebuilds the session and retries
 once transparently — the client just sees a slightly slower first connect
-after a long idle period.
+after a long idle period. The in-band pass refresh is deliberately
+**non-destructive**: it refreshes tokens and the proxy pass in place and
+never restarts the SOCKS listener under an in-flight connection (an earlier
+version closed the listener inside the refresh path, which killed the very
+connection that triggered it with
+`http2: client conn could not be established`).
 
 Token ingestion also self-heals: when the just-pushed access token is rejected
 by Guardian (e.g. it was already near expiry), the container refreshes it with
