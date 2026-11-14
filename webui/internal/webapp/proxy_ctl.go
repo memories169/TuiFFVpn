@@ -16,6 +16,7 @@ package webapp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -39,7 +40,9 @@ type TestResult struct {
 }
 
 // startProxy (re)starts the SOCKS5 proxy against the given server with the
-// given bearer proxy pass.
+// given bearer proxy pass. The dialer keeps a bearerProvider closure so a
+// CONNECT answered 401 (proxy pass expired) re-fetches a fresh pass through
+// the same Guardian healing chain and retries transparently.
 func (a *App) startProxy(host string, port int, bearer string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -47,7 +50,22 @@ func (a *App) startProxy(host string, port int, bearer string) {
 		a.proxySrv.Close()
 		a.proxySrv = nil
 	}
-	dial := proxy.HTTP2Dialer(host, port, bearer)
+	bearerProvider := func() (string, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		if err := a.restartProxyOnActive(ctx, host, port); err != nil {
+			return "", err
+		}
+		// restartProxyOnActive called startProxy with the fresh pass; to
+		// avoid recursion, hand back the stored pass from state.
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		if p := a.currentPass; p != "" {
+			return p, nil
+		}
+		return "", errors.New("no proxy pass available after refresh")
+	}
+	dial := proxy.HTTP2Dialer(host, port, bearer, bearerProvider)
 	srv := &proxy.Server{Listen: a.ProxyAddr, Dial: dial}
 	a.proxySrv = srv
 	go func() {

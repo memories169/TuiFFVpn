@@ -255,66 +255,90 @@ func readRequest(r *bufio.Reader) (byte, string, error) {
 
 // HTTP2Dialer returns a Dialer that tunnels through the given Firefox VPN
 // server over HTTP/2 CONNECT, authenticated with the proxy pass.
-func HTTP2Dialer(host string, port int, proxyPass string) Dialer {
+// HTTP2Dialer returns a Dialer that tunnels through the MASQUE edge. The
+// proxy pass comes from bearerProvider on every dial: when the edge answers
+// 401 (pass expired — Guardian passes are short-lived), the provider is
+// re-consulted once and the CONNECT retried, so a running proxy survives
+// pass expiry without user intervention.
+func HTTP2Dialer(host string, port int, proxyPass string, bearerProvider func() (string, error)) Dialer {
 	transport := &http2.Transport{}
 	return func(ctx context.Context, dst string) (net.Conn, error) {
-		proxyHost := net.JoinHostPort(host, fmt.Sprint(port))
-		dialer := &net.Dialer{Timeout: 15 * time.Second}
-		rawConn, err := dialer.DialContext(ctx, "tcp", proxyHost)
-		if err != nil {
-			return nil, err
+		conn, err := dialOnce(transport, host, port, proxyPass, dst, ctx)
+		if err == nil {
+			return conn, nil
 		}
-		tconn := utls.UClient(rawConn, &utls.Config{
-			ServerName: host,
-			MinVersion: utls.VersionTLS12,
-			NextProtos: []string{"h2"},
-		}, utls.HelloFirefox_Auto)
-		if err := tconn.HandshakeContext(ctx); err != nil {
-			rawConn.Close()
-			return nil, err
+		// 401 on CONNECT = expired/invalid pass. Ask the provider for a
+		// fresh one and retry exactly once.
+		if strings.Contains(err.Error(), "HTTP 401") && bearerProvider != nil {
+			fresh, perr := bearerProvider()
+			if perr != nil {
+				return nil, fmt.Errorf("proxy pass refresh failed: %w (first error: %v)", perr, err)
+			}
+			proxyPass = fresh
+			conn, err = dialOnce(transport, host, port, proxyPass, dst, ctx)
 		}
-		if tconn.ConnectionState().NegotiatedProtocol != "h2" {
-			tconn.Close()
-			return nil, errors.New("server did not negotiate h2")
-		}
-		cc, err := transport.NewClientConn(tconn)
-		if err != nil {
-			tconn.Close()
-			return nil, err
-		}
-		// Bidirectional tunnel: http2 CONNECT reads the request body to send
-		// client->upstream data, and returns the upstream->client stream in the
-		// response body. Wire them with an io.Pipe.
-		pr, pw := io.Pipe()
-		req, err := http.NewRequestWithContext(ctx, http.MethodConnect, "http://"+dst, pr)
-		if err != nil {
-			cc.Close()
-			pw.Close()
-			return nil, err
-		}
-		req.Host = dst
-		req.URL.Host = proxyHost
-		// The caller passes the raw JWT; a double "Bearer Bearer ..." or
-		// missing scheme both make the edge answer "parsing JWT failed".
-		auth := proxyPass
-		if !strings.HasPrefix(auth, "Bearer ") {
-			auth = "Bearer " + auth
-		}
-		req.Header.Set("Proxy-Authorization", auth)
-		resp, err := cc.RoundTrip(req)
-		if err != nil {
-			pw.Close()
-			cc.Close()
-			return nil, err
-		}
-		if resp.StatusCode < 200 || resp.StatusCode > 299 {
-			resp.Body.Close()
-			pw.Close()
-			cc.Close()
-			return nil, fmt.Errorf("connect refused (HTTP %d)", resp.StatusCode)
-		}
-		return &http2TunnelConn{reader: resp.Body, writer: pw, cc: cc}, nil
+		return conn, err
 	}
+}
+
+// dialOnce performs a single CONNECT tunnel attempt to dst via the edge.
+func dialOnce(transport *http2.Transport, host string, port int, proxyPass, dst string, ctx context.Context) (net.Conn, error) {
+	proxyHost := net.JoinHostPort(host, fmt.Sprint(port))
+	dialer := &net.Dialer{Timeout: 15 * time.Second}
+	rawConn, err := dialer.DialContext(ctx, "tcp", proxyHost)
+	if err != nil {
+		return nil, err
+	}
+	tconn := utls.UClient(rawConn, &utls.Config{
+		ServerName: host,
+		MinVersion: utls.VersionTLS12,
+		NextProtos: []string{"h2"},
+	}, utls.HelloFirefox_Auto)
+	if err := tconn.HandshakeContext(ctx); err != nil {
+		rawConn.Close()
+		return nil, err
+	}
+	if tconn.ConnectionState().NegotiatedProtocol != "h2" {
+		tconn.Close()
+		return nil, errors.New("server did not negotiate h2")
+	}
+	cc, err := transport.NewClientConn(tconn)
+	if err != nil {
+		tconn.Close()
+		return nil, err
+	}
+	// Bidirectional tunnel: http2 CONNECT reads the request body to send
+	// client->upstream data, and returns the upstream->client stream in the
+	// response body. Wire them with an io.Pipe.
+	pr, pw := io.Pipe()
+	req, err := http.NewRequestWithContext(ctx, http.MethodConnect, "http://"+dst, pr)
+	if err != nil {
+		cc.Close()
+		pw.Close()
+		return nil, err
+	}
+	req.Host = dst
+	req.URL.Host = proxyHost
+	// The caller passes the raw JWT; a double "Bearer Bearer ..." or
+	// missing scheme both make the edge answer "parsing JWT failed".
+	auth := proxyPass
+	if !strings.HasPrefix(auth, "Bearer ") {
+		auth = "Bearer " + auth
+	}
+	req.Header.Set("Proxy-Authorization", auth)
+	resp, err := cc.RoundTrip(req)
+	if err != nil {
+		pw.Close()
+		cc.Close()
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		resp.Body.Close()
+		pw.Close()
+		cc.Close()
+		return nil, fmt.Errorf("connect refused (HTTP %d)", resp.StatusCode)
+	}
+	return &http2TunnelConn{reader: resp.Body, writer: pw, cc: cc}, nil
 }
 
 // http2TunnelConn adapts an HTTP/2 CONNECT tunnel to net.Conn: reads come from

@@ -100,6 +100,24 @@ A background rotator runs every 30 minutes and:
    refresh fails (token revoked) or when the active account's quota drops
    below 512 MB — the proxy restarts on the new account with no manual step.
 
+Additionally, the proxy pass itself is refreshed **in-band**: Guardian proxy
+passes are short-lived (about an hour), and when the MASQUE edge answers
+CONNECT with **401** the dialer re-fetches a fresh pass through the Guardian
+chain (activate → refresh → retry) and retries the connection once — the
+proxy keeps running without user intervention and the
+`connect refused (HTTP 401)` errors from earlier versions are gone.
+
+Access-token refreshes are equally automatic: every refresh path (rotator,
+proxy-pass healing, ingest probe, account switch) funnels through a
+single-flight gate. Firefox Accounts refresh tokens are **one-time-use
+(rotating)** — each successful refresh revokes the presented token and
+issues a new one — so concurrent refreshes using the same token would race
+and the loser would store a now-revoked refresh token. The gate serializes
+them: the first caller refreshes and stores the new pair; concurrent
+callers re-read the rotated tokens. Refresh tokens only die permanently when
+the account changes password, signs out everywhere, or the session lapses —
+those require re-adding the account.
+
 Token ingestion also self-heals: when the just-pushed access token is rejected
 by Guardian (e.g. it was already near expiry), the container refreshes it with
 the account's refresh token, provisions the entitlement via Guardian

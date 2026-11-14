@@ -180,19 +180,9 @@ func (a *App) probeQuota(accessToken, email string) {
 			}
 			a.mu.Unlock()
 			if refresh != "" {
-				if tok, rerr := fxa.RefreshToken(ctx, refresh); rerr == nil {
-					a.mu.Lock()
-					if ac := a.Store.FindAccount(email); ac != nil {
-						ac.AccessToken = tok.AccessToken
-						if tok.RefreshToken != "" {
-							ac.RefreshToken = tok.RefreshToken
-						}
-						ac.ObtainedAt = time.Now()
-						ac.ExpiresIn = tok.ExpiresIn
-						_ = a.Store.Save()
-					}
-					a.mu.Unlock()
-					client = &guardian.Client{Token: tok.AccessToken}
+				// Single-flight gated refresh (rotating FxA tokens).
+				if tok, rerr := a.refreshAccountToken(ctx, email, refresh); rerr == nil {
+					client = &guardian.Client{Token: tok}
 					pass, err = client.FetchProxyPass(ctx)
 					if errors.Is(err, guardian.ErrTokenInvalid) {
 						if _, aerr := client.Activate(ctx); aerr == nil {

@@ -20,7 +20,6 @@ import (
 	"log"
 	"time"
 
-	"fxsocks/webui/internal/fxa"
 	"fxsocks/webui/internal/guardian"
 )
 
@@ -111,6 +110,8 @@ func (a *App) rotateOnce() {
 }
 
 // refreshAccount refreshes the named account's access token; true on success.
+// Goes through singleFlightRefresh (webapp.go) so concurrent rotations never
+// race the rotating one-time-use FxA refresh token.
 func (a *App) refreshAccount(ctx context.Context, email string) bool {
 	a.mu.Lock()
 	ac := a.Store.FindAccount(email)
@@ -122,24 +123,12 @@ func (a *App) refreshAccount(ctx context.Context, email string) bool {
 	if refresh == "" {
 		return false
 	}
-	tok, err := fxa.RefreshToken(ctx, refresh)
+	tok, err := a.refreshAccountToken(ctx, email, refresh)
 	if err != nil {
 		log.Printf("rotator: refresh %s failed: %v", email, err)
 		return false
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	ac = a.Store.FindAccount(email)
-	if ac == nil {
-		return false
-	}
-	ac.AccessToken = tok.AccessToken
-	if tok.RefreshToken != "" {
-		ac.RefreshToken = tok.RefreshToken
-	}
-	ac.ObtainedAt = time.Now()
-	ac.ExpiresIn = tok.ExpiresIn
-	return a.Store.Save() == nil
+	return tok != ""
 }
 
 // pickAlternate picks the other account with the most remaining quota.
@@ -190,6 +179,9 @@ func (a *App) restartProxyOnActive(ctx context.Context, host string, port int) e
 	if err != nil {
 		return err
 	}
+	a.mu.Lock()
+	a.currentPass = pass.RawToken
+	a.mu.Unlock()
 	a.startProxy(host, port, pass.Bearer())
 	a.mu.Lock()
 	if ac := a.Store.ActiveAccount(); ac != nil {

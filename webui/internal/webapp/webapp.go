@@ -45,6 +45,13 @@ type App struct {
 	proxySrv *proxy.Server
 	pass     *guardian.ProxyPass
 	lastErr  string
+	// currentPass is the live proxy pass JWT of the running proxy. The
+	// dialer's bearerProvider reads it after refreshing through Guardian.
+	currentPass string
+	// refreshMu single-flights FxA refresh-token exchanges (rotating tokens
+	// race when refreshed concurrently — the loser would overwrite the
+	// stored refresh token with a revoked one).
+	refreshMu sync.Mutex
 }
 
 // New builds an App.
@@ -66,6 +73,12 @@ func (a *App) accessToken() string {
 // validAccessToken returns a usable access token for the active account,
 // refreshing it from its refresh token when expired. Returns an error when no
 // account is active.
+//
+// FxA refresh tokens are ONE-TIME-USE (rotating): every successful refresh
+// revokes the presented token and issues a new one. Concurrent refreshes
+// using the same token therefore race — the loser's write would overwrite
+// the stored (still-valid) refresh token with a dead one. All refreshes go
+// through a single-flight gate keyed on the refresh token to prevent that.
 func (a *App) validAccessToken(ctx context.Context) (string, error) {
 	a.mu.Lock()
 	ac := a.Store.ActiveAccount()
@@ -85,12 +98,43 @@ func (a *App) validAccessToken(ctx context.Context) (string, error) {
 		// No refresh token; return whatever we have (may be rejected by Guardian).
 		return old, nil
 	}
-	tok, err := fxa.RefreshToken(ctx, refresh)
+	tok, err := a.refreshAccountToken(ctx, activeEmail(a), refresh)
 	if err != nil {
 		return old, nil // keep old; Guardian decides
 	}
+	return tok, nil
+}
+
+// refreshAccountToken single-flights an FxA refresh for the given account.
+// FxA refresh tokens are ONE-TIME-USE (rotating): the presented token is
+// revoked on success and a new one is returned. Concurrent refreshes with
+// the same token race — the loser's write would store a revoked token.
+// Under the refreshMu gate:
+//   - a winner performs the exchange and stores the new pair on the account;
+//   - a loser that arrives while another refresh is in flight waits, then
+//     re-reads the account: if its refresh token changed, the winner already
+//     handled it and the fresh access token is returned.
+func (a *App) refreshAccountToken(ctx context.Context, email, refreshToken string) (string, error) {
+	a.refreshMu.Lock()
+	defer a.refreshMu.Unlock()
+
+	// Re-read under the gate: another goroutine may have just rotated this
+	// account's tokens while we were waiting to acquire the mutex.
 	a.mu.Lock()
-	if ac := a.Store.ActiveAccount(); ac != nil {
+	if ac := a.Store.FindAccount(email); ac != nil && ac.RefreshToken != refreshToken {
+		// Tokens already rotated for us.
+		tok := ac.AccessToken
+		a.mu.Unlock()
+		return tok, nil
+	}
+	a.mu.Unlock()
+
+	tok, err := fxa.RefreshToken(ctx, refreshToken)
+	if err != nil {
+		return "", err
+	}
+	a.mu.Lock()
+	if ac := a.Store.FindAccount(email); ac != nil && ac.RefreshToken == refreshToken {
 		ac.AccessToken = tok.AccessToken
 		if tok.RefreshToken != "" {
 			ac.RefreshToken = tok.RefreshToken
@@ -99,8 +143,9 @@ func (a *App) validAccessToken(ctx context.Context) (string, error) {
 		ac.ExpiresIn = tok.ExpiresIn
 		_ = a.Store.Save()
 	}
+	fresh := tok.AccessToken
 	a.mu.Unlock()
-	return tok.AccessToken, nil
+	return fresh, nil
 }
 
 // LoginResponse is the API reply for /api/login.

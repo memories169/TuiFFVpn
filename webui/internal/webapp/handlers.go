@@ -18,7 +18,6 @@ import (
 	"encoding/json"
 	"errors"
 
-	"fxsocks/webui/internal/fxa"
 	"fxsocks/webui/internal/guardian"
 	"log"
 	"net/http"
@@ -100,6 +99,9 @@ func (a *App) handleSelect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Restart the proxy against the selected server.
+	a.mu.Lock()
+	a.currentPass = pass.RawToken
+	a.mu.Unlock()
 	a.startProxy(req.ServerHost, req.ServerPort, pass.Bearer())
 
 	log.Printf("webui: selected %s (%s/%s) server=%s:%d", req.CountryName, req.CountryCode, req.CityName, req.ServerHost, req.ServerPort)
@@ -146,22 +148,14 @@ func (a *App) fetchProxyPassWithRefresh(r *http.Request, token string) (*guardia
 	if refresh == "" {
 		return nil, err
 	}
-	tok, rerr := fxa.RefreshToken(r.Context(), refresh)
+	// Route through the single-flight gate: FxA refresh tokens rotate on
+	// use, so concurrent refreshes with the same token race and the loser
+	// would store a revoked refresh token.
+	tok, rerr := a.refreshAccountToken(r.Context(), activeEmail(a), refresh)
 	if rerr != nil {
 		return nil, err
 	}
-	a.mu.Lock()
-	if active := a.Store.ActiveAccount(); active != nil {
-		active.AccessToken = tok.AccessToken
-		if tok.RefreshToken != "" {
-			active.RefreshToken = tok.RefreshToken
-		}
-		active.ObtainedAt = time.Now()
-		active.ExpiresIn = tok.ExpiresIn
-		a.Store.Save()
-	}
-	a.mu.Unlock()
-	gc2 := &guardian.Client{Endpoint: a.Guardian, Token: tok.AccessToken}
+	gc2 := &guardian.Client{Endpoint: a.Guardian, Token: tok}
 	pass2, err2 := gc2.FetchProxyPass(r.Context())
 	if err2 == nil {
 		return pass2, nil
