@@ -1,0 +1,13 @@
+# Local toolchains and caches must not be sent to the Docker build context.
+.toolchain/
+.toolcache/
+bin/
+gen/
+data/
+fxvpn-webui
+*.log
+.git/
+.gitignore
+Dockerfile
+docker-compose.yml
+README.md

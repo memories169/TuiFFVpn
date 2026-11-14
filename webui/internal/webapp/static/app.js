@@ -1,0 +1,297 @@
+const $ = (id) => document.getElementById(id);
+let countries = [];
+let verifySession = null;
+
+async function api(path, method, body) {
+  const opts = { method: method || 'GET', headers: {} };
+  if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  const r = await fetch('/api/' + path, opts);
+  return r.json();
+}
+
+// ---- Bootstrap: check admin session, show login or app ----
+(async function init() {
+  const st = await api('admin/status');
+  if (st.authenticated) {
+    applyTheme(st.theme || 'light');
+    showApp();
+  }
+  bindAdminForm();
+})();
+
+function bindAdminForm() {
+  $('admin-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    $('admin-error').textContent = '';
+    const res = await api('admin/login', 'POST', {
+      user: $('admin-user').value, password: $('admin-pass').value,
+    });
+    if (res.ok) { showApp(); } else { $('admin-error').textContent = res.error || 'Login failed'; }
+  });
+  $('logout').addEventListener('click', async () => {
+    await api('admin/logout', 'POST');
+    // Reset to the admin login view immediately (not just on reload).
+    $('app').classList.add('hidden');
+    $('admin-login').classList.remove('hidden');
+    $('admin-pass').value = '';
+  });
+}
+
+function showApp() {
+  $('admin-login').classList.add('hidden');
+  $('app').classList.remove('hidden');
+  bindTabs();
+  loadAccounts();
+  loadCountries();
+  bindSettings();
+  loadStatusTheme();
+}
+
+// ---- Tabs ----
+function bindTabs() {
+  document.querySelectorAll('.tab').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.querySelectorAll('.tabpanel').forEach((p) => p.classList.add('hidden'));
+      $('tab-' + btn.dataset.tab).classList.remove('hidden');
+    });
+  });
+}
+
+// ---- Account management ----
+$('login-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('login-error').textContent = '';
+  const email = $('email').value, password = $('password').value;
+  const res = await api('login', 'POST', { email, password });
+  if (res.needs_2fa) { verifySession = res.session; $('verify-card').style.display = ''; return; }
+  if (res.error) { $('login-error').textContent = res.error; return; }
+  loadAccounts();
+});
+
+$('verify-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('verify-error').textContent = '';
+  const res = await api('verify', 'POST', { session: verifySession, code: $('verify-code').value, email: $('email').value });
+  if (res.error) { $('verify-error').textContent = res.error; return; }
+  $('verify-card').style.display = 'none';
+  loadAccounts();
+});
+
+$('token-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('token-error').textContent = '';
+  const res = await api('login-token', 'POST', {
+    access_token: $('tok-access').value,
+    refresh_token: $('tok-refresh').value,
+    email: $('tok-email').value,
+  });
+  if (res.error) { $('token-error').textContent = res.error; return; }
+  $('tok-access').value = ''; $('tok-refresh').value = '';
+  loadAccounts();
+});
+
+async function loadAccounts() {
+  const res = await api('accounts');
+  const list = $('account-list');
+  list.innerHTML = '';
+  const accts = res.accounts || [];
+  if (accts.length === 0) { list.innerHTML = '<li class="muted">Chưa có account nào — thêm qua form đăng nhập phía trên.</li>'; return; }
+  accts.forEach((a) => {
+    const li = document.createElement('li');
+    li.className = 'account-item';
+    const quota = a.quota_left === '' ? '?' : a.quota_left;
+    const active = a.active;
+    const span = document.createElement('span');
+    span.innerHTML = `<b>${a.email}</b>${active ? ' <span class="active-badge">● đang dùng</span>' : ''}` +
+      ` — Quota: ${quota} / ${a.quota_max || '?'}` +
+      (a.has_token ? '' : ' <span class="muted">(chưa có token — bấm "Dùng account này" trên account khác, hoặc thêm lại account này)</span>') +
+      (a.probe_error ? ` <span class="muted" title="${a.probe_error.replace(/"/g, '&quot;')}">⚠ probe: ${a.probe_error.length > 90 ? a.probe_error.slice(0, 90) + '…' : a.probe_error}</span>` : '');
+    if (active) li.classList.add('account-active');
+    const use = document.createElement('button');
+    use.type = 'button';
+    use.textContent = active ? 'Đang dùng' : 'Dùng account này';
+    use.className = 'small' + (active ? ' ghost' : '');
+    if (active) use.disabled = true;
+    use.addEventListener('click', async () => {
+      use.disabled = true;
+      use.textContent = 'Đang chuyển…';
+      const res = await api('accounts/select', 'POST', { email: a.email });
+      if (res.error) {
+        use.textContent = 'Dùng account này';
+        use.disabled = false;
+        alert('Chuyển account: ' + res.error);
+      }
+      loadStatusTheme();
+      loadAccounts();
+    });
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.textContent = 'Xóa';
+    del.className = 'ghost small';
+    del.addEventListener('click', async () => {
+      if (!confirm('Xóa account ' + a.email + '? Proxy đang chạy trên account này sẽ dừng.')) return;
+      await api('accounts/delete', 'POST', { email: a.email });
+      loadStatusTheme();
+      loadAccounts();
+    });
+    li.appendChild(span);
+    li.appendChild(use);
+    li.appendChild(del);
+    list.appendChild(li);
+  });
+}
+
+// ---- Location ----
+async function loadCountries() {
+  const res = await api('servers');
+  if (res.error) { $('country').innerHTML = '<option>' + res.error + '</option>'; return; }
+  countries = res.countries || [];
+  const sel = $('country');
+  sel.innerHTML = '<option value="">Chọn quốc gia</option>' + countries.map((c) => `<option value="${c.code}">${c.name} (${c.code})</option>`).join('');
+  sel.disabled = false;
+  // Restore the persisted selection (server + account survive restarts).
+  await restoreSelection();
+}
+
+// restoreSelection re-applies the saved country/city/server after a reload,
+// and shows the active account + proxy state.
+async function restoreSelection() {
+  const st = await api('status');
+  const selected = st.selected || {};
+  if (selected.country_code) {
+    const country = countries.find((c) => c.code === selected.country_code);
+    if (country) {
+      $('country').value = country.code;
+      const cs = $('city');
+      cs.innerHTML = '<option value="">Chọn thành phố</option>' +
+        country.cities.map((ct) => `<option value="${ct.code}">${ct.name}</option>`).join('');
+      cs.disabled = false;
+      if (selected.city_code) {
+        const city = country.cities.find((ct) => ct.code === selected.city_code);
+        if (city) {
+          cs.value = city.code;
+          const ul = $('servers');
+          ul.innerHTML = '';
+          city.servers.forEach((srv) => {
+            if (srv.quarantined) return;
+            const li = document.createElement('li');
+            const btn = document.createElement('button');
+            const isCurrent = srv.hostname === selected.server_host;
+            btn.textContent = srv.hostname + ':' + srv.port + (isCurrent ? '  ✓' : '');
+            if (isCurrent) btn.classList.add('current-server');
+            btn.addEventListener('click', () => pickServer(country, city, srv, btn));
+            li.appendChild(btn);
+            ul.appendChild(li);
+          });
+        }
+      }
+    }
+  }
+  // Proxy + account state line.
+  const email = st.email || '(no account)';
+  const proxy = st.proxy || {};
+  const lines = [];
+  lines.push(`Account active: ${email}`);
+  if (selected.server_host) {
+    lines.push(`Server: ${selected.server_host}:${selected.server_port}`);
+    lines.push(proxy.running ? 'Proxy: đang chạy trên ' + a_proxyAddrFixed() : 'Proxy: chưa chạy — bấm server để khởi động lại');
+  }
+  $('selection-status').textContent = lines.join(' · ');
+  if (proxy.running) {
+    $('test-result').textContent = 'Proxy đang chạy (đã lưu). Bấm Test connection để kiểm tra exit IP.';
+  }
+}
+
+function a_proxyAddrFixed() {
+  return window.location.hostname + ':1080';
+}
+
+// pickServer handles the server button click (shared by fresh list and
+// restored list).
+async function pickServer(country, city, srv, btn) {
+  const res = await api('select', 'POST', {
+    country_code: country.code, country_name: country.name,
+    city_code: city.code, city_name: city.name,
+    server_host: srv.hostname, server_port: srv.port,
+  });
+  if (res.error) {
+    btn.title = res.error;
+    if (res.action === 're_add_account') {
+      $('test-result').textContent = 'Lỗi: account đang chọn không có token. Hãy thêm lại account (userscript/form) rồi chọn lại server.\nChi tiết: ' + res.error;
+      loadAccounts();
+    } else {
+      $('test-result').textContent = 'Lỗi khi chọn location: ' + res.error;
+    }
+    return;
+  }
+  $('test-result').textContent = `Đã chọn ${srv.hostname}:${srv.port} — proxy đang chạy. Bấm Test connection để kiểm tra exit IP.`;
+  document.querySelectorAll('.server-list button').forEach((b) => b.classList.remove('current-server'));
+  btn.classList.add('current-server');
+}
+
+$('country').addEventListener('change', (e) => {
+  const code = e.target.value;
+  const country = countries.find((c) => c.code === code);
+  const cs = $('city');
+  cs.innerHTML = '<option value="">Chọn thành phố</option>' + (country ? country.cities.map((ct) => `<option value="${ct.code}">${ct.name}</option>`).join('') : '');
+  cs.disabled = !country;
+  $('servers').innerHTML = '';
+});
+
+$('city').addEventListener('change', (e) => {
+  const country = countries.find((c) => c.code === $('country').value);
+  const city = country ? country.cities.find((ct) => ct.code === e.target.value) : null;
+  const ul = $('servers');
+  ul.innerHTML = '';
+  if (!city) return;
+  city.servers.forEach((srv) => {
+    if (srv.quarantined) return;
+    const li = document.createElement('li');
+    const btn = document.createElement('button');
+    btn.textContent = srv.hostname + ':' + srv.port;
+    btn.addEventListener('click', () => pickServer(country, city, srv, btn));
+    li.appendChild(btn);
+    ul.appendChild(li);
+  });
+});
+
+// ---- Connection test ----
+$('test-conn').addEventListener('click', async () => {
+  const btn = $('test-conn');
+  btn.disabled = true;
+  $('test-result').textContent = 'Đang kiểm tra…';
+  const res = await api('test');
+  if (res.ok) {
+    $('test-result').textContent = 'Kết nối OK qua: ' + res.server + '\nExit IP: ' + res.exit_ip + ' (' + res.country + ')\nĐộ trễ: ' + res.latency_ms + ' ms';
+  } else {
+    $('test-result').textContent = 'Lỗi: ' + (res.error || 'test failed');
+  }
+  btn.disabled = false;
+});
+
+// ---- Settings ----
+async function loadStatusTheme() {
+  const st = await api('admin/status');
+  $('theme').value = st.theme || 'light';
+  applyTheme(st.theme || 'light');
+}
+
+$('apply-theme').addEventListener('click', async () => {
+  const theme = $('theme').value;
+  const res = await api('admin/theme', 'POST', { theme });
+  if (res.ok) { applyTheme(theme); }
+});
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+}
+
+$('pass-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('pass-error').textContent = '';
+  const res = await api('admin/change-password', 'POST', { current: $('cur-pass').value, next: $('new-pass').value });
+  if (res.ok) { $('pass-error').textContent = 'Đã đổi mật khẩu.'; $('cur-pass').value = ''; $('new-pass').value = ''; }
+  else { $('pass-error').textContent = res.error || 'Đổi mật khẩu thất bại'; }
+});

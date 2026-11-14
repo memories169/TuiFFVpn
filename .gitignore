@@ -1,0 +1,17 @@
+# Build artifacts
+fxvpn-webui
+fxvpn-token
+*.log
+
+# Local toolchain and caches (Go + module/build caches)
+.toolchain/
+.toolcache/
+
+# Runtime state
+data/
+state.json
+
+# Editor
+.idea/
+.vscode/
+*.swp

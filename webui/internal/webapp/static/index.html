@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Firefox VPN Console</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Admin login -->
+  <section id="admin-login" class="center">
+    <div class="card login-card">
+      <h1>🦊 Firefox VPN Console</h1>
+      <form id="admin-form">
+        <label>Username
+          <input type="text" id="admin-user" autocomplete="username" required>
+        </label>
+        <label>Password
+          <input type="password" id="admin-pass" autocomplete="current-password" required>
+        </label>
+        <button type="submit">Log in</button>
+      </form>
+      <p id="admin-error" class="error"></p>
+    </div>
+  </section>
+
+  <!-- Main app -->
+  <section id="app" class="hidden">
+    <header class="topbar">
+      <h1>🦊 Firefox VPN Console</h1>
+      <nav class="tabs">
+        <button class="tab active" data-tab="accounts">Quản lý account</button>
+        <button class="tab" data-tab="location">Chọn location</button>
+        <button class="tab" data-tab="settings">Cài đặt</button>
+      </nav>
+      <button id="logout" class="ghost">Đăng xuất</button>
+    </header>
+
+    <!-- Tab: Account management -->
+    <section id="tab-accounts" class="tabpanel">
+      <div class="card">
+        <h2>Đăng nhập Firefox</h2>
+        <form id="login-form">
+          <label>Email
+            <input type="email" id="email" autocomplete="username" required>
+          </label>
+          <label>Mật khẩu
+            <input type="password" id="password" autocomplete="current-password" required>
+          </label>
+          <button type="submit">Đăng nhập</button>
+        </form>
+        <p id="login-error" class="error"></p>
+      </div>
+
+      <div class="card" id="verify-card" style="display:none">
+        <h2>Nhập mã xác nhận</h2>
+        <form id="verify-form">
+          <input type="text" id="verify-code" placeholder="Mã 6 chữ số" required>
+          <button type="submit">Xác nhận</button>
+        </form>
+        <p id="verify-error" class="error"></p>
+      </div>
+
+      <div class="card">
+        <h2>Nhập token thủ công (khi FxA bị CAPTCHA chặn)</h2>
+        <form id="token-form">
+          <label>Email
+            <input type="email" id="tok-email" required>
+          </label>
+          <label>Access token
+            <input type="password" id="tok-access" required>
+          </label>
+          <label>Refresh token (tùy chọn)
+            <input type="password" id="tok-refresh">
+          </label>
+          <button type="submit">Lưu token</button>
+        </form>
+        <p id="token-error" class="error"></p>
+      </div>
+
+      <div class="card">
+        <h2>Danh sách account</h2>
+        <ul id="account-list" class="account-list"></ul>
+      </div>
+    </section>
+
+    <!-- Tab: Location -->
+    <section id="tab-location" class="tabpanel hidden">
+      <div class="card">
+        <h2>Chọn location</h2>
+        <p id="selection-status" class="muted"></p>
+        <select id="country"><option value="">Đang tải danh sách…</option></select>
+        <select id="city" disabled><option value="">Chọn thành phố</option></select>
+        <ul id="servers" class="server-list"></ul>
+      </div>
+      <div class="card">
+        <h2>Kiểm tra kết nối</h2>
+        <p>Kiểm tra xem proxy có thực sự thoát qua Firefox VPN hay không.</p>
+        <button id="test-conn" type="button">Test connection</button>
+        <pre id="test-result" class="status">Chưa test.</pre>
+      </div>
+    </section>
+
+    <!-- Tab: Settings -->
+    <section id="tab-settings" class="tabpanel hidden">
+      <div class="card">
+        <h2>Giao diện</h2>
+        <label>Chủ đề
+          <select id="theme">
+            <option value="light">Sáng</option>
+            <option value="dark">Tối</option>
+          </select>
+        </label>
+        <button id="apply-theme" type="button">Áp dụng</button>
+      </div>
+      <div class="card">
+        <h2>Đổi mật khẩu admin</h2>
+        <form id="pass-form">
+          <label>Mật khẩu hiện tại
+            <input type="password" id="cur-pass" required>
+          </label>
+          <label>Mật khẩu mới
+            <input type="password" id="new-pass" required>
+          </label>
+          <button type="submit">Đổi mật khẩu</button>
+        </form>
+        <p id="pass-error" class="error"></p>
+      </div>
+    </section>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>
