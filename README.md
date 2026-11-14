@@ -152,6 +152,13 @@ atomically without touching any session (`session=retained`), and dead
 sessions found by failed CONNECTs are dropped — not closed under live
 traffic — with the retry landing on another pooled session or a fresh one.
 
+Sessions also carry an **age cap** (25 minutes): older sessions stop
+taking new tunnels and are pruned once drained. Mozilla edges kill
+long-lived h2 sessions server-side after a while; without the cap the
+first CONNECT after that server-side kill hit a closed pipe. Rotation
+before death lands the edge's kill on an already-drained session instead
+of live traffic.
+
 The CONNECT handshake itself is bounded with a 12-second budget inside the
 dialer by racing the CONNECT against a timer — a session that stalls (edge
 accepted the stream but never answers — occasionally seen right after

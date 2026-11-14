@@ -502,6 +502,7 @@ type edgeSession struct {
 	generation  int64     // bumped when this session is established
 	openTunnels int       // tunnels currently open on this session
 	lastUsed    time.Time // last time a CONNECT was issued on this session
+	createdAt   time.Time // when this session was established (age cap)
 }
 
 // maxStreamsPerSession caps concurrent tunnels per edge session (sing-box
@@ -512,6 +513,13 @@ const maxStreamsPerSession = 32
 // maxSessionsPerDialer bounds the session pool (like sing-box's upstream
 // session pool). Beyond it, the least-loaded session is used anyway.
 const maxSessionsPerDialer = 8
+
+// maxSessionAge caps how long a session may serve NEW tunnels. Mozilla
+// edges kill long-lived h2 sessions server-side after a while (observed
+// ~hours); retiring sessions proactively (once drained) means the kill
+// moment never lands on live traffic — the dial that would have hit it
+// rotates onto a fresh session instead.
+const maxSessionAge = 25 * time.Minute
 
 // Generation reports how many distinct edge sessions the dialer has built.
 // A stable exit IP needs this to stay at 1 across repeated dials.
@@ -562,6 +570,11 @@ func (s *edgeSession) usableLocked() bool {
 	if s.cc == nil || !s.cc.CanTakeNewRequest() || s.openTunnels >= maxStreamsPerSession {
 		return false
 	}
+	// Age cap: retire sessions older than maxSessionAge from NEW dials.
+	// Existing tunnels on them keep flowing; once drained they are pruned.
+	if time.Since(s.createdAt) > maxSessionAge {
+		return false
+	}
 	// Session hygiene (mirrors sing-box idle_timeout): a session idle for
 	// too long may be half-dead — the edge reaped it but our conn object
 	// doesn't know. Verify with a ping BEFORE handing it to a new CONNECT.
@@ -593,8 +606,9 @@ func (p *sessionPool) pruneLocked() {
 		dead := ses.cc == nil
 		empty := ses.openTunnels == 0
 		idle := time.Since(ses.lastUsed) > 2*time.Minute
+		aged := time.Since(ses.createdAt) > maxSessionAge
 		ses.mu.Unlock()
-		if dead || (empty && idle) {
+		if dead || ((empty && idle) || (empty && aged)) {
 			ses.closeLocked()
 			continue
 		}
@@ -647,6 +661,7 @@ func newEdgeSession(ctx context.Context, host string, port int, insecureTLS bool
 		insecureTLS: insecureTLS,
 		generation:  derefGen(gen),
 		lastUsed:    time.Now(),
+		createdAt:   time.Now(),
 	}, nil
 }
 
