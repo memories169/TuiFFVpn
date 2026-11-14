@@ -1,0 +1,40 @@
+# fxvpn-webui — Docker Compose deployment using the prebuilt GHCR image.
+#
+# Copy this file to docker-compose.yml, copy .env.example to .env, fill in
+# your values, then:
+#
+#   cp docker-compose.yml.example docker-compose.yml
+#   cp .env.example .env && $EDITOR .env
+#   docker compose up -d
+#
+# Image source: https://github.com/memories169/TuiFFVpn/pkgs/container/tuiffvpn
+
+services:
+  fxvpn-webui:
+    # Prebuilt multi-arch image (amd64 + arm64), published by CI on every
+    # push to main and on v* tags. Pin a version for stability:
+    #   image: ghcr.io/memories169/tuiffvpn:1.0.0
+    image: ${FXVPN_IMAGE:-ghcr.io/memories169/tuiffvpn:latest}
+    pull_policy: always
+    container_name: fxvpn-webui
+    restart: unless-stopped
+    ports:
+      - "${WEBUI_PORT:-9090}:9090"   # Web console
+      - "${SOCKS_PORT:-1080}:1080"   # SOCKS5 proxy (starts after you pick a server)
+    environment:
+      WEBUI_ADDR: ":9090"
+      # Bind on all interfaces so the SOCKS5 proxy is reachable from other
+      # devices on your LAN. Use 127.0.0.1:1080 to keep it local-only.
+      SOCKS_ADDR: "0.0.0.0:1080"
+      GUARDIAN_ENDPOINT: "https://vpn.mozilla.org"
+      STATE_FILE: "/data/state.json"
+      # Secret shared with the PC userscript: it posts captured tokens to
+      # /api/ingest with this key (X-Ingest-Key header). Required — the
+      # ingest endpoint is disabled until it is set.
+      FXVPN_INGEST_KEY: "${FXVPN_INGEST_KEY:?set FXVPN_INGEST_KEY in .env}"
+    volumes:
+      - fxvpn-data:/data
+    shm_size: "128m"
+
+volumes:
+  fxvpn-data:

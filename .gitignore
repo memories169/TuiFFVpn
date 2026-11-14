@@ -12,6 +12,12 @@
 /data/
 /state.json
 
+# Real deployment secrets (commit only the .example files)
+.env
+
+# Local compose (generated from docker-compose.yml.example)
+docker-compose.yml
+
 # Editor
 .idea/
 .vscode/

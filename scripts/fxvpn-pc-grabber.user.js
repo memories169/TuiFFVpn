@@ -26,8 +26,8 @@
 
   // ==== CẤU HÌNH ============================================================
   // URL của fxvpn-webui trong container (thay nếu chạy host/port khác).
-  var CONSOLE_URL = 'http://127.0.0.1:9090';
-  // FXVPN_INGEST_KEY đã set trong docker-compose.yml của container.
+  var CONSOLE_URL = 'http://127.0.0.1:9090';   // khớp WEBUI_PORT trong .env
+  // FXVPN_INGEST_KEY đã set trong .env của container — dán giá trị vào đây.
   var INGEST_KEY = '';
   // true = tự đổi token + đẩy vào container ngay khi bắt được.
   var AUTO_SEND = true;

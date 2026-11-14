@@ -213,17 +213,31 @@ The GHCR package is private by default if the repo is private — either make
 the package public (Package settings → Change visibility) or run
 `docker login ghcr.io` with a PAT that has `read:packages`.
 
-## Build & run
+## Deploy with Docker Compose
 
-Requires Go 1.20+.
+The recommended path uses the prebuilt GHCR image — no local build needed:
 
 ```bash
-# build and run with Docker
-docker compose up --build
-# then open http://localhost:9090
+git clone https://github.com/memories169/TuiFFVpn.git
+cd TuiFFVpn
 
-# or run directly
-go build -o fxvpn-webui ./webui/cmd/fxvpn-webui
+cp docker-compose.yml.example docker-compose.yml
+cp .env.example .env
+# set FXVPN_INGEST_KEY (openssl rand -hex 24) and match it in the userscript
+$EDITOR .env
+
+docker compose up -d
+# then open http://localhost:9090 (default admin password: admin — change it
+# in the Cài đặt tab on first login)
+```
+
+To build the image yourself instead, remove the `image:` line's GHCR value
+and add `build: .` to the service in your `docker-compose.yml` (requires
+Go 1.20+ if you build outside Docker), or run:
+
+```bash
+docker build -t fxvpn-webui:local .
+go build -o fxvpn-webui ./webui/cmd/fxvpn-webui   # or run directly
 ./fxvpn-webui -http :9090 -socks 127.0.0.1:1080 -state /data/state.json
 ```
 
@@ -232,9 +246,10 @@ go build -o fxvpn-webui ./webui/cmd/fxvpn-webui
 The image ships only the Go binaries — the token capture runs in your own
 browser via the userscript, so there is no browser stack inside:
 
-1. `docker compose up --build`, open `http://localhost:9090` (admin/`admin`).
-2. Set `FXVPN_INGEST_KEY` in docker-compose.yml (see the userscript section
-   above) and install `scripts/fxvpn-pc-grabber.user.js` in your browser.
+1. `cp docker-compose.yml.example docker-compose.yml && cp .env.example .env`,
+   set `FXVPN_INGEST_KEY` in `.env` (see the userscript section above), then
+   `docker compose up -d` and open `http://localhost:9090` (admin/`admin`).
+2. Install `scripts/fxvpn-pc-grabber.user.js` in your browser.
 3. Sign in on `accounts.firefox.com` — tokens flow into the console
    automatically; the rotator keeps them fresh and switches accounts as
    quotas drain.
