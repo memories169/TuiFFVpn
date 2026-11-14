@@ -159,7 +159,10 @@ The CONNECT handshake itself is bounded with a 12-second deadline inside
 the dialer: a session that stalls (edge accepted the stream but never
 answers — occasionally seen right after a pass swap) fails fast and the
 dialer retries once on a guaranteed-fresh session, instead of hanging
-until the caller's outer timeout.
+until the caller's outer timeout. The keepalive loop never tears down a
+session with tunnels in flight (a failed liveness ping is tolerated while
+traffic is active — h2 streams keep flowing), and Test connection resets
+the edge session and retries once before surfacing an error.
 
 Token ingestion also self-heals: when the just-pushed access token is rejected
 by Guardian (e.g. it was already near expiry), the container refreshes it with

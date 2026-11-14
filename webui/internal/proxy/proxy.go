@@ -309,6 +309,10 @@ func (m *MasqueDialer) SetRenewProvider(provider func() (string, error), expires
 	go m.renewalLoop(expiresAt)
 }
 
+// ResetSession tears the edge session down unconditionally (diagnostics
+// and the test-connection retry path); the next dial builds a fresh one.
+func (m *MasqueDialer) ResetSession() { m.s.reset() }
+
 // UpdatePass swaps the current pass atomically; new CONNECTs use it
 // immediately on the SAME edge session.
 func (m *MasqueDialer) UpdatePass(raw string) {
@@ -447,9 +451,13 @@ func (s *edgeSession) keepalive(stop <-chan struct{}, interval time.Duration) {
 			pctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			err := cc.Ping(pctx)
 			cancel()
-			if err != nil {
-				// Session is dead (network drop / edge reaped it). Drop it;
-				// the next dial establishes a fresh one.
+			if err != nil && s.canReset() {
+				// Session failed its liveness check. Only tear it down when
+				// no tunnels are in flight — resetting mid-traffic would cut
+				// user connections (http2.ClientConn.Close kills every
+				// open stream). If tunnels are active, leave the session
+				// alone: its streams still work, and the next dial decides
+				// (CanTakeNewRequest) whether to rebuild.
 				s.reset()
 			}
 		}
@@ -466,6 +474,7 @@ type edgeSession struct {
 	tconn       *utls.UConn
 	insecureTLS bool
 	generation  int64 // bumped each time a NEW edge session is established
+	openTunnels int   // tunnels currently open on this session
 }
 
 // Generation reports how many distinct edge sessions the dialer has built.
@@ -513,6 +522,13 @@ func (s *edgeSession) get(ctx context.Context) (*http2.ClientConn, error) {
 	s.tconn = tconn
 	s.generation++
 	return cc, nil
+}
+
+// canReset reports whether no tunnels are currently open on the session.
+func (s *edgeSession) canReset() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.openTunnels == 0
 }
 
 // reset tears the session down; the next dial builds a fresh one.
@@ -579,15 +595,24 @@ func (s *edgeSession) dial(ctx context.Context, dst, proxyPass string) (net.Conn
 		pw.Close()
 		return nil, fmt.Errorf("connect refused (HTTP %d)", resp.StatusCode)
 	}
-	return &http2TunnelConn{reader: resp.Body, writer: pw, cc: cc}, nil
+	s.mu.Lock()
+	s.openTunnels++
+	s.mu.Unlock()
+	tc := &http2TunnelConn{reader: resp.Body, writer: pw, cc: cc, onClose: func() {
+		s.mu.Lock()
+		s.openTunnels--
+		s.mu.Unlock()
+	}}
+	return tc, nil
 }
 
 // http2TunnelConn adapts an HTTP/2 CONNECT tunnel to net.Conn: reads come from
 // the response body, writes go into the request body pipe.
 type http2TunnelConn struct {
-	reader io.ReadCloser
-	writer io.WriteCloser
-	cc     *http2.ClientConn
+	reader  io.ReadCloser
+	writer  io.WriteCloser
+	cc      *http2.ClientConn
+	onClose func()
 }
 
 func (c *http2TunnelConn) Read(p []byte) (int, error)  { return c.reader.Read(p) }
@@ -600,6 +625,9 @@ func (c *http2TunnelConn) Write(p []byte) (int, error) { return c.writer.Write(p
 func (c *http2TunnelConn) Close() error {
 	_ = c.writer.Close()
 	_ = c.reader.Close()
+	if c.onClose != nil {
+		c.onClose()
+	}
 	return nil
 }
 func (c *http2TunnelConn) LocalAddr() net.Addr                { return nil }

@@ -170,6 +170,19 @@ func (a *App) testProxy() TestResult {
 	httpReq.Header.Set("Accept", "text/plain, application/json")
 	resp, err := client.Do(httpReq)
 	if err != nil {
+		// The outer h2-over-tunnel occasionally stalls (edge accepted the
+		// CONNECT but the inner flow stalls — seen right after a pass swap
+		// or on a long-lived session). Reset the edge session and retry
+		// once before surfacing the error.
+		if a.edgeDialer != nil {
+			a.edgeDialer.ResetSession()
+			if resp2, err2 := client.Do(httpReq.Clone(httpReq.Context())); err2 == nil {
+				resp = resp2
+				err = nil
+			}
+		}
+	}
+	if err != nil {
 		// The tunnel dial itself can still fail (expired proxy pass etc.).
 		msg := err.Error()
 		if strings.Contains(msg, "parsing JWT failed") {
