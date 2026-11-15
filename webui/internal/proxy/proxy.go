@@ -313,18 +313,19 @@ func (m *MasqueDialer) SetRenewProvider(provider func() (string, error), expires
 	go m.renewalLoop(expiresAt)
 }
 
-// ResetSession tears down every pooled edge session that has no in-flight
-// traffic (diagnostics and the test-connection retry path); sessions with
-// open tunnels survive for the live connections using them, and the next
-// dial builds fresh sessions.
+// ResetSession tears down the ENTIRE pool unconditionally (test-connection
+// retry path). Rationale: the pooled sessions may be invalidated
+// server-side (edge NAT/state expiry after hours) while still looking
+// healthy client-side — keeping them would poison the retry, and live
+// traffic on a server-invalidated session is already dead; sing-box
+// reconnects instantly on its own.
 func (m *MasqueDialer) ResetSession() {
 	m.pool.mu.Lock()
-	sessions := append([]*edgeSession(nil), m.pool.sessions...)
+	sessions := m.pool.sessions
+	m.pool.sessions = nil
 	m.pool.mu.Unlock()
 	for _, ses := range sessions {
-		if ses.canReset() {
-			ses.reset()
-		}
+		ses.reset()
 	}
 }
 
@@ -519,7 +520,7 @@ const maxSessionsPerDialer = 8
 // ~hours); retiring sessions proactively (once drained) means the kill
 // moment never lands on live traffic — the dial that would have hit it
 // rotates onto a fresh session instead.
-const maxSessionAge = 25 * time.Minute
+const maxSessionAge = 20 * time.Minute
 
 // Generation reports how many distinct edge sessions the dialer has built.
 // A stable exit IP needs this to stay at 1 across repeated dials.
