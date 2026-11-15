@@ -55,6 +55,9 @@ type App struct {
 	// edgeDialer is the live MASQUE dialer; its Generation() reports how
 	// many distinct edge sessions have been built (stability diagnostics).
 	edgeDialer *proxy.MasqueDialer
+	// suspectEdge is the server host currently rejecting tunnels
+	// server-side (2 consecutive fast fresh-session failures).
+	suspectEdge string
 }
 
 // New builds an App.

@@ -187,6 +187,15 @@ slow-but-healthy tunnels. Stalls are handled at their proper layers — the
 dialer's handshake race, session keepalive pings, the age cap, and the
 caller's `Client.Timeout`.
 
+**Edge-side rejection is a different failure**: when two consecutive
+attempts with brand-new sessions fail fast (~200 ms, `closed pipe` right
+after a 2xx CONNECT), the edge host itself is accepting the CONNECT and
+then resetting the inner stream — a server-side rejection of this
+edge+pass combination. Test connection marks the edge `edge_suspect` and
+the UI says so; the fix is picking a different server from the same city.
+No client-side change can help, and the same pass usually works on other
+edges of the same city.
+
 Session hygiene mirrors sing-box (which FoxyVPN uses as its tunnel engine):
 before reusing a session idle for more than 25 s, the dialer pings it — a
 zombie session fails the ping and is rebuilt synchronously, so a CONNECT

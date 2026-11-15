@@ -300,6 +300,7 @@ type MasqueDialer struct {
 func (m *MasqueDialer) SetRenewProvider(provider func() (string, error), expiresAt time.Time) {
 	m.renewProvider = provider
 	if expiresAt.IsZero() {
+		log.Printf("proxy: pass expiry unknown — renewal loop not scheduled (in-band 401 refresh still active)")
 		return
 	}
 	if m.renewStop != nil {
@@ -345,6 +346,7 @@ func (m *MasqueDialer) currentPass() string {
 
 // renewalLoop renews the pass 2 minutes before it expires, indefinitely.
 func (m *MasqueDialer) renewalLoop(expiresAt time.Time) {
+	log.Printf("proxy: pass renewal scheduled next_expiry=%s", expiresAt.Format(time.RFC3339))
 	for {
 		delay := time.Until(expiresAt.Add(-2 * time.Minute))
 		if delay <= 0 {
@@ -358,8 +360,10 @@ func (m *MasqueDialer) renewalLoop(expiresAt time.Time) {
 		if m.renewProvider == nil {
 			return
 		}
+		log.Printf("proxy: pass renewal starting (expiry %s)", expiresAt.Format(time.RFC3339))
 		np, err := m.renewProvider()
 		if err != nil {
+			log.Printf("proxy: pass renewal failed: %v — retrying in 30s", err)
 			// Retry shortly; the in-band 401 path still covers us.
 			select {
 			case <-m.renewStop:
@@ -368,8 +372,11 @@ func (m *MasqueDialer) renewalLoop(expiresAt time.Time) {
 			}
 			continue
 		}
-		expiresAt = time.Now().Add(30 * time.Minute) // Guardian pass TTL guard
+		// Track the real expiry when the provider can supply it; otherwise
+		// assume the standard Guardian TTL.
+		expiresAt = time.Now().Add(30 * time.Minute)
 		m.UpdatePass(np)
+		log.Printf("proxy: pass renewed successfully next_expiry=%s session=retained", expiresAt.Format(time.RFC3339))
 	}
 }
 

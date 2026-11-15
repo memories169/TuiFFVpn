@@ -44,6 +44,10 @@ type TestResult struct {
 	// same edge session. Equal to ExitIP when the edge pins the egress to
 	// the session; different means the edge assigns egress per tunnel.
 	SecondIP string `json:"second_ip,omitempty"`
+	// EdgeSuspect marks that this edge host is rejecting tunnels
+	// server-side (fresh sessions keep failing fast) — switching servers
+	// is the fix.
+	EdgeSuspect bool `json:"edge_suspect,omitempty"`
 }
 
 // startProxy (re)starts the SOCKS5 proxy against the given server with the
@@ -86,6 +90,7 @@ func (a *App) startProxy(host string, port int, bearer string, passExpiry time.T
 	// Proactive pass renewal: refresh the pass ~2 min before it expires so
 	// the edge never tears the session down for auth — the exit IP stays
 	// pinned to the session across pass rotations.
+	log.Printf("proxy: pass expiry at %s (in %s)", passExpiry.Format(time.RFC3339), time.Until(passExpiry).Round(time.Second))
 	a.edgeDialer.SetRenewProvider(bearerProvider, passExpiry)
 	srv := &proxy.Server{Listen: a.ProxyAddr, Dial: a.edgeDialer.Dial}
 	a.proxySrv = srv
@@ -169,6 +174,7 @@ func (a *App) testProxy() TestResult {
 	httpReq.Header.Set("User-Agent", fxa.DefaultBrowserUA)
 	httpReq.Header.Set("Accept", "text/plain, application/json")
 	resp, err := client.Do(httpReq)
+	edgeSuspect := false
 	if err != nil {
 		// Deterministic per-server stalls: after switching locations the
 		// new edge may accept the CONNECT but stall the inner flow. Reset
@@ -186,12 +192,24 @@ func (a *App) testProxy() TestResult {
 		}
 	}
 	if err != nil {
+		// Two consecutive fast failures with fresh sessions on the same edge
+		// = the edge itself is rejecting tunnels server-side (accepts CONNECT
+		// then resets the stream). Mark the edge suspect: switching servers
+		// is the fix, no client change will help.
+		if strings.Contains(err.Error(), "closed pipe") {
+			edgeSuspect = true
+			a.mu.Lock()
+			a.suspectEdge = server
+			a.mu.Unlock()
+		}
+	}
+	if err != nil {
 		// The tunnel dial itself can still fail (expired proxy pass etc.).
 		msg := err.Error()
 		if strings.Contains(msg, "parsing JWT failed") {
 			msg = "proxy pass rejected by the edge (invalid/expired JWT) — re-select the location to fetch a fresh pass, or re-add the account"
 		}
-		return TestResult{OK: false, Error: "tunnel request failed: " + msg, Server: server}
+		return TestResult{OK: false, Error: "tunnel request failed: " + msg, Server: server, EdgeSuspect: edgeSuspect}
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
@@ -226,6 +244,11 @@ func (a *App) testProxy() TestResult {
 			snippet = snippet[:160] + "…"
 		}
 		return TestResult{OK: false, Error: "tunnel connected but no exit IP returned; inner response: " + snippet, Server: server, LatencyMS: latency}
+	}
+	if err == nil {
+		a.mu.Lock()
+		a.suspectEdge = ""
+		a.mu.Unlock()
 	}
 	return TestResult{OK: true, ExitIP: ip, Country: country, LatencyMS: latency, Server: server, EdgeSessions: sessions, SecondIP: secondIP}
 }

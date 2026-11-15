@@ -274,7 +274,11 @@ $('test-conn').addEventListener('click', async () => {
     msg += '\nĐộ trễ: ' + res.latency_ms + ' ms';
     $('test-result').textContent = msg;
   } else {
-    $('test-result').textContent = 'Lỗi: ' + (res.error || 'test failed');
+    let msg = 'Lỗi: ' + (res.error || 'test failed');
+    if (res.edge_suspect) {
+      msg += '\n⚠ Edge host này đang từ chối tunnel phía server (session mới liên tiếp bị RST sau 2xx).\n→ Chọn server KHÁC trong cùng thành phố — lỗi này không thể sửa từ client.';
+    }
+    $('test-result').textContent = msg;
   }
   btn.disabled = false;
 });
