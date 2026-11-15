@@ -152,17 +152,18 @@ atomically without touching any session (`session=retained`), and dead
 sessions found by failed CONNECTs are dropped — not closed under live
 traffic — with the retry landing on another pooled session or a fresh one.
 
-Sessions also carry an **age cap** (20 minutes): older sessions stop
-taking new tunnels and are pruned once drained. Mozilla edges invalidate
-long-lived h2 sessions server-side after a while (NAT/flow-state expiry —
-observed after hours); without the cap the first CONNECT after that
-server-side kill hit a closed pipe, and a same-session retry would be
-poisoned too. Rotation before death lands the edge's kill on an
-already-drained session instead of live traffic. Test connection's
-session-reset retry drops the **whole pool** unconditionally — a
-server-invalidated session can look healthy client-side, so retaining
-"busy" sessions would poison the retry; live flows on a dead session are
-already broken and sing-box reconnects instantly.
+Sessions also carry an **age cap** (10 minutes — the operaproxy lesson:
+nothing long-lived can break mid-use): older sessions stop taking new
+tunnels and are pruned once drained. Mozilla edges invalidate long-lived
+h2 sessions server-side after a while (NAT/flow-state expiry — observed
+after hours); without the cap the first CONNECT after that server-side
+kill hit a closed pipe, and a same-session retry would be poisoned too.
+Rotation before death lands the edge's kill on an already-drained session
+instead of live traffic. Test connection's session-reset retry drops the
+**whole pool** unconditionally — a server-invalidated session can look
+healthy client-side, so retaining "busy" sessions would poison the retry;
+live flows on a dead session are already broken and sing-box reconnects
+instantly.
 
 The CONNECT handshake itself is bounded with a 12-second budget inside the
 dialer by racing the CONNECT against a timer — a session that stalls (edge

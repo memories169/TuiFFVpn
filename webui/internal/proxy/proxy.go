@@ -515,12 +515,13 @@ const maxStreamsPerSession = 32
 // session pool). Beyond it, the least-loaded session is used anyway.
 const maxSessionsPerDialer = 8
 
-// maxSessionAge caps how long a session may serve NEW tunnels. Mozilla
-// edges kill long-lived h2 sessions server-side after a while (observed
-// ~hours); retiring sessions proactively (once drained) means the kill
-// moment never lands on live traffic — the dial that would have hit it
-// rotates onto a fresh session instead.
-const maxSessionAge = 20 * time.Minute
+// maxSessionAge caps how long a session may serve NEW tunnels (10 min —
+// opera-proxy's lesson: nothing long-lived can break mid-use). Mozilla
+// edges kill long-lived h2 sessions server-side after a while; retiring
+// sessions proactively (once drained) means the kill moment never lands
+// on live traffic — the dial that would have hit it rotates onto a fresh
+// session instead.
+const maxSessionAge = 10 * time.Minute
 
 // Generation reports how many distinct edge sessions the dialer has built.
 // A stable exit IP needs this to stay at 1 across repeated dials.
