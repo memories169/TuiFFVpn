@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"fxsocks/webui/internal/guardian"
+	"fxsocks/webui/internal/state"
 )
 
 // rotateTicker drives the automatic account rotation: when the active
@@ -39,20 +40,67 @@ var defaultRotateSettings = rotateSettings{
 	RefreshBefore: 30 * time.Minute,
 }
 
+// tokenKeeperInterval — how often EVERY account's refresh token is
+// exercised. FxA refresh tokens decay when their grant/session goes
+// unused (the user's complaint: after hours/days only the last-used
+// account stayed valid). Refreshing each account daily keeps every
+// grant active simultaneously.
+const tokenKeeperInterval = 24 * time.Hour
+
 // startRotator launches the background rotation loop.
 func (a *App) startRotator() {
 	go func() {
 		t := time.NewTicker(defaultRotateSettings.Interval)
 		defer t.Stop()
+		keeper := time.NewTicker(tokenKeeperInterval)
+		defer keeper.Stop()
 		// Restore the last-selected server before the first rotation pass so
 		// the proxy is reachable as soon as possible after a container
 		// restart (the selected server persists in state.json).
 		a.restoreSelectedOnBoot()
 		a.rotateOnce()
-		for range t.C {
-			a.rotateOnce()
+		// First keeper pass shortly after boot: heal any accounts that
+		// went stale while the container was down.
+		time.Sleep(20 * time.Second)
+		a.keeperOnce()
+		for {
+			select {
+			case <-t.C:
+				a.rotateOnce()
+			case <-keeper.C:
+				a.keeperOnce()
+			}
 		}
 	}()
+}
+
+// keeperOnce refreshes every account's access token (skip the active
+// one — the rotator owns it and it is already fresh). Keeps all grants
+// alive so non-active accounts never go "token invalid" from inactivity.
+func (a *App) keeperOnce() {
+	a.mu.Lock()
+	accts := append([]state.Account(nil), a.Store.Accounts...)
+	active := a.Store.Active
+	a.mu.Unlock()
+
+	refreshed, failed := 0, 0
+	for _, ac := range accts {
+		if ac.Email == active || ac.RefreshToken == "" {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		_, err := a.refreshAccountToken(ctx, ac.Email, ac.RefreshToken)
+		cancel()
+		if err != nil {
+			failed++
+			log.Printf("keeper: %s refresh failed: %v (account may need re-add)", ac.Email, err)
+		} else {
+			refreshed++
+		}
+	}
+	if refreshed+failed > 0 {
+		log.Printf("keeper: exercised %d/%d inactive accounts (failed %d)", refreshed, refreshed+failed, failed)
+	}
 }
 
 // restoreSelectedOnBoot restarts the proxy on the persisted server selection

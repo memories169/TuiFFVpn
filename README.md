@@ -101,6 +101,19 @@ Failures (e.g. Fastly CAPTCHA on the token refresh from this network) are
 logged and the UI keeps the last selection — re-selecting the server in the
 Chọn location tab retries with the same chain once tokens are healthy.
 
+### Token keeper — why non-active accounts stay valid
+
+Firefox Accounts refresh tokens decay when their grant/session goes
+unused: accounts added but never exercised go "token invalid" within
+days while the last-used account stays fine. A background **token
+keeper** runs every 24 hours and refreshes **every** account's access
+token (skipping the active one — the rotator owns it), plus one
+healing pass 20 seconds after boot for accounts that went stale while
+the container was down. Failures are logged per account
+(`keeper: <email> refresh failed` — that account needs re-adding; its
+FxA session was destroyed server-side, e.g. sign-out or password
+change, and no client can revive it).
+
 ### Automatic rotation
 
 A background rotator runs every 30 minutes and:
