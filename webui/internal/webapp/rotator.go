@@ -128,6 +128,44 @@ func (a *App) rotateOnce() {
 	a.mu.Unlock()
 	a.saveState()
 
+	// Pass-swap account rotation: keep the tunnel pool alive. The proxy
+	// pass is account-scoped but edge-host-agnostic — the new account's
+	// pass works on the SAME edge host, so swap it into the live dialer
+	// instead of tearing every session down (which would kill every
+	// sing-box flow). If the new pass is rejected on this edge later, the
+	// in-band 401 refresh chain handles it.
+	if sel.ServerHost != "" && sel.ServerPort != 0 && a.edgeDialer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		pass, err := a.refreshProxyPass(ctx)
+		cancel()
+		if err != nil {
+			log.Printf("rotator: pass swap for %s failed: %v — falling back to proxy restart", alt.Email, err)
+			if err := a.restartProxyOnActive(context.Background(), sel.ServerHost, sel.ServerPort); err != nil {
+				log.Printf("rotator: proxy restart on %s failed: %v", alt.Email, err)
+			}
+			return
+		}
+		a.mu.Lock()
+		a.currentPass = pass.RawToken
+		a.mu.Unlock()
+		a.edgeDialer.UpdatePass(pass.RawToken)
+		a.edgeDialer.SetRenewProvider(func() (string, error) {
+			pctx, pcancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer pcancel()
+			p, perr := a.refreshProxyPass(pctx)
+			if perr != nil {
+				return "", perr
+			}
+			a.mu.Lock()
+			a.currentPass = p.RawToken
+			a.mu.Unlock()
+			a.edgeDialer.UpdatePass(p.RawToken)
+			return p.RawToken, nil
+		}, pass.ExpiresAt())
+		log.Printf("rotator: pass swapped to %s on the live session pool (sessions retained)", alt.Email)
+		return
+	}
+
 	if sel.ServerHost != "" && sel.ServerPort != 0 {
 		if err := a.restartProxyOnActive(context.Background(), sel.ServerHost, sel.ServerPort); err != nil {
 			log.Printf("rotator: proxy restart on %s failed: %v", alt.Email, err)

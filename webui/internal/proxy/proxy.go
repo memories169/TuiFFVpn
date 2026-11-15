@@ -344,11 +344,31 @@ func (m *MasqueDialer) currentPass() string {
 	return m.proxyPass
 }
 
-// renewalLoop renews the pass 2 minutes before it expires, indefinitely.
+// passDeadline caps the effective pass lifetime at 5 minutes (mirrors
+// FoxyVPN's credentialDeadlineMillis maximumAge): regardless of the JWT
+// exp claim, the pass is treated as expiring in ≤5 minutes and is renewed
+// ~60 s before that deadline. If the edge invalidates pass-bound sessions
+// sooner than the JWT claims, this closes the window entirely.
+const passDeadlineCap = 5 * time.Minute
+
+func passDeadline(expiresAt time.Time) time.Time {
+	d := time.Until(expiresAt) - 30*time.Second
+	if d > passDeadlineCap {
+		d = passDeadlineCap
+	}
+	if d < 0 {
+		d = 0
+	}
+	return time.Now().Add(d)
+}
+
+// renewalLoop renews the pass ~60 s before its (5-min-capped) deadline,
+// indefinitely. Sessions are never touched — only the pass is swapped.
 func (m *MasqueDialer) renewalLoop(expiresAt time.Time) {
-	log.Printf("proxy: pass renewal scheduled next_expiry=%s", expiresAt.Format(time.RFC3339))
+	deadline := passDeadline(expiresAt)
+	log.Printf("proxy: pass renewal scheduled deadline=%s", deadline.Format(time.RFC3339))
 	for {
-		delay := time.Until(expiresAt.Add(-2 * time.Minute))
+		delay := time.Until(deadline.Add(-60 * time.Second))
 		if delay <= 0 {
 			delay = time.Second
 		}
@@ -360,23 +380,21 @@ func (m *MasqueDialer) renewalLoop(expiresAt time.Time) {
 		if m.renewProvider == nil {
 			return
 		}
-		log.Printf("proxy: pass renewal starting (expiry %s)", expiresAt.Format(time.RFC3339))
+		log.Printf("proxy: pass renewal starting (deadline %s)", deadline.Format(time.RFC3339))
 		np, err := m.renewProvider()
 		if err != nil {
-			log.Printf("proxy: pass renewal failed: %v — retrying in 30s", err)
+			log.Printf("proxy: pass renewal failed: %v — retrying in 15s", err)
 			// Retry shortly; the in-band 401 path still covers us.
 			select {
 			case <-m.renewStop:
 				return
-			case <-time.After(30 * time.Second):
+			case <-time.After(15 * time.Second):
 			}
 			continue
 		}
-		// Track the real expiry when the provider can supply it; otherwise
-		// assume the standard Guardian TTL.
-		expiresAt = time.Now().Add(30 * time.Minute)
 		m.UpdatePass(np)
-		log.Printf("proxy: pass renewed successfully next_expiry=%s session=retained", expiresAt.Format(time.RFC3339))
+		deadline = time.Now().Add(passDeadlineCap - 30*time.Second)
+		log.Printf("proxy: pass renewed successfully deadline=%s session=retained", deadline.Format(time.RFC3339))
 	}
 }
 

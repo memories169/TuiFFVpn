@@ -147,10 +147,24 @@ session. The session's busy counter covers **in-flight handshakes** too
 (reserved before the CONNECT starts, released on tunnel close) — keepalive
 and pruning therefore never reap a session whose CONNECT is still
 negotiating, which previously surfaced as `io: read/write on closed pipe`
-under concurrent load. Pass renewal swaps the pass into the dialer
-atomically without touching any session (`session=retained`), and dead
-sessions found by failed CONNECTs are dropped — not closed under live
-traffic — with the retry landing on another pooled session or a fresh one.
+under concurrent load.
+
+Pass renewal without session churn mirrors FoxyVPN's
+`credentialDeadlineMillis`: the pass deadline is capped at **5 minutes**
+regardless of the JWT exp claim, and the renewal loop replaces the pass
+~60 s before that deadline through the dialer's atomic `UpdatePass` —
+sessions are never touched (`session=retained`, like the reference
+client's `adoptPass → UpdateToken` path). Every stage logs
+(`pass renewal scheduled/starting/failed/renewed`).
+
+**Account rotation also swaps the pass, not the sessions**: the rotator
+switches accounts by fetching the new account's pass and calling
+`UpdatePass` on the live dialer — the edge host is account-agnostic, so
+the same sessions keep serving traffic with the new account's pass.
+Tearing the pool down on rotation (an earlier behavior) killed every
+sing-box flow on each 30-minute rotation; the pass-swap keeps flows
+alive, and the in-band 401 refresh chain covers a pass the edge rejects
+later.
 
 Sessions also carry an **age cap** (10 minutes — the operaproxy lesson:
 nothing long-lived can break mid-use): older sessions stop taking new
