@@ -383,6 +383,25 @@ The CLI `fxvpn-token` is also in the image (`docker compose exec fxvpn-webui
 | `-state` | `STATE_FILE` | `/data/state.json` | Persisted tokens + selection |
 | `-guardian` | `GUARDIAN_ENDPOINT` | `https://vpn.mozilla.org` | Guardian API endpoint |
 
+### Edge control API (for sing-box / telegram & discord bots)
+
+Traffic uses the single SOCKS5 port; server switching is a control-plane
+operation. An external orchestrator — e.g. a telegram/discord bot driving
+sing-box on another machine (a super-bot-go fork carries the client side
+in its own repo) — manages ffvpn's server selection through three
+key-authenticated endpoints (header `X-Ingest-Key`, the same secret the
+userscript uses):
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/edges` | full server list from Remote Settings + current selection + proxy state |
+| `POST` | `/api/edges/select` | switch server — body `{"country_code","country_name","city_code","city_name","server_host","server_port"}`; runs the same healing chain as the web UI and restarts the proxy on the new edge. The sing-box outbound (single `:1080`) needs **no change** |
+| `GET` | `/api/edges/status` | current selection, proxy state, `edge_suspect` flag |
+
+sing-box itself only ever sees one outbound — the ffvpn SOCKS5 listener.
+The bot lists edges → `select` by name → reads status/exit IP; the bot-side
+client lives in the bot's own repository, not here.
+
 ## Web UI endpoints
 
 | Method | Path | Purpose |

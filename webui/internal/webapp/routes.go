@@ -36,6 +36,12 @@ func (a *App) Routes() http.Handler {
 	// Key-authenticated; disabled unless FXVPN_INGEST_KEY is set.
 	mux.HandleFunc("/api/ingest", a.handleIngest)
 
+	// Edge control API for external orchestrators (telegram/discord bots
+	// driving sing-box — github.com/ppptran/super-bot-go pattern): list
+	// servers, switch the selected edge, read status. Key-authenticated
+	// with the same FXVPN_INGEST_KEY; single SOCKS5 port serves traffic.
+	a.registerEdgeRoutes(mux)
+
 	// Authed: everything else.
 	mux.HandleFunc("/api/admin/change-password", a.requireAuth(a.handleChangePassword))
 	mux.HandleFunc("/api/admin/theme", a.requireAuth(a.handleTheme))
