@@ -389,6 +389,24 @@ func (a *App) refreshProxyPass(ctx context.Context) (*guardian.ProxyPass, error)
 		}
 	}
 	if err != nil {
+		// The active account genuinely has no usable pass (token expired,
+		// refresh blocked by a Fastly challenge). The switch itself already
+		// succeeded — the proxy just cannot restart on it yet. Fail over to
+		// the healthiest OTHER account so the tunnel keeps running; the
+		// next keeper/rotation pass heals the active one and rotation
+		// returns it automatically.
+		if alts := a.pickAlternates(a.Store.Active); len(alts) > 0 {
+			log.Printf("webui: active account's pass unavailable (%v) — failing over to %s", err, alts[0].Email)
+			if a.activateAccount(alts[0].Email) {
+				// activateAccount re-fetches its own pass.
+				a.mu.Lock()
+				running := a.proxySrv != nil
+				a.mu.Unlock()
+				if running {
+					return nil, errFailoverOK
+				}
+			}
+		}
 		return nil, err
 	}
 	a.mu.Lock()
@@ -401,6 +419,10 @@ func (a *App) refreshProxyPass(ctx context.Context) (*guardian.ProxyPass, error)
 	a.mu.Unlock()
 	return pass, nil
 }
+
+// errFailoverOK marks that a failover already restarted the proxy; callers
+// surface it as success with a note rather than an error.
+var errFailoverOK = errors.New("failover to another account")
 
 // restartProxyOnActive re-fetches a proxy pass and restarts the SOCKS proxy
 // against the given server. Callers outside the dial path only — it replaces

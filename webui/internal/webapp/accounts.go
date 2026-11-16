@@ -16,6 +16,7 @@ package webapp
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -51,6 +52,14 @@ func (a *App) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	out := make([]item, 0, len(accts))
 	for i := range accts {
 		ac := &accts[i]
+		refreshed := ac.RefreshedAt
+		// Go's omitempty does NOT omit a zero time.Time (it is a struct), so
+		// accounts that were added by login/paste but never yet touched by
+		// the keeper serialize "0001-01-01T00:00:00Z" and the UI rendered it
+		// as "1/1/1, 7:06 AM". Blank it instead.
+		if refreshed.Year() < 2000 {
+			refreshed = time.Time{}
+		}
 		out = append(out, item{
 			Email:        ac.Email,
 			QuotaMax:     ac.QuotaMax,
@@ -59,7 +68,7 @@ func (a *App) handleAccounts(w http.ResponseWriter, r *http.Request) {
 			HasToken:     ac.AccessToken != "",
 			ProbeError:   ac.ProbeError,
 			RefreshError: ac.RefreshError,
-			RefreshedAt:  ac.RefreshedAt,
+			RefreshedAt:  refreshed,
 		})
 	}
 	writeJSON(w, 200, map[string]any{"accounts": out, "active": a.Store.Active, "total": len(out), "limit": "none"})
@@ -128,11 +137,33 @@ func (a *App) handleAccountSelect(w http.ResponseWriter, r *http.Request) {
 	// Restart the proxy on the new account when a server is already chosen.
 	if sel.ServerHost != "" && sel.ServerPort != 0 {
 		perr := a.restartProxyOnActive(r.Context(), sel.ServerHost, sel.ServerPort)
-		if perr != nil {
-			writeJSON(w, 200, map[string]any{"ok": true, "switched": true, "proxy": "stopped", "error": perr.Error()})
-			return
+		switch {
+		case perr == nil:
+			writeJSON(w, 200, map[string]any{"ok": true, "switched": true, "proxy": "running", "server": sel.ServerHost})
+		case errors.Is(perr, errFailoverOK):
+			// The new account's pass was unavailable (transient Fastly block
+			// etc.) and the app failed over to the healthiest alternative;
+			// the tunnel is still running, just on another account. Report
+			// success with a note — NOT an error — so the UI doesn't scare
+			// the user while the switch did happen.
+			writeJSON(w, 200, map[string]any{
+				"ok":       true,
+				"switched": true,
+				"proxy":    "failover",
+				"note":     "account mới chưa lấy được pass (Fastly chặn tạm thời) — tạm dùng account khác, rotator sẽ tự trả lại",
+			})
+		default:
+			// The switch itself already persisted (SetActive above); only the
+			// proxy restart failed. Say so explicitly instead of a bare
+			// "token invalid" that reads like the switch failed.
+			writeJSON(w, 200, map[string]any{
+				"ok":       true,
+				"switched": true,
+				"proxy":    "stopped",
+				"error":    perr.Error(),
+				"note":     "đã chuyển account nhưng chưa restart được proxy — thử lại hoặc chọn location",
+			})
 		}
-		writeJSON(w, 200, map[string]any{"ok": true, "switched": true, "proxy": "running", "server": sel.ServerHost})
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "switched": true})

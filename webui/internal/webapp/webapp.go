@@ -116,7 +116,19 @@ func (a *App) validAccessToken(ctx context.Context) (string, error) {
 	}
 	tok, err := a.refreshAccountToken(ctx, activeEmail(a), refresh)
 	if err != nil {
-		return old, nil // keep old; Guardian decides
+		// Refresh failed (typically transient: Fastly challenge). If the
+		// stored access token is STILL VALID, using it avoids handing
+		// Guardian an expired token that only earns a misleading 401. When
+		// it is expired there is genuinely nothing better to send — let
+		// Guardian decide.
+		a.mu.Lock()
+		ac := a.Store.ActiveAccount()
+		stillValid := ac != nil && ac.AccessTokenValid(time.Now())
+		if stillValid {
+			old = ac.AccessToken
+		}
+		a.mu.Unlock()
+		return old, nil
 	}
 	return tok, nil
 }

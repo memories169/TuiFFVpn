@@ -121,7 +121,7 @@ async function loadAccounts() {
       (isDead ? ` <span class="dead-badge" title="${a.refresh_error.replace(/"/g, '&quot;')}">⛔ token chết: ${a.refresh_error.length > 90 ? a.refresh_error.slice(0, 90) + '…' : a.refresh_error}</span>` : '') +
       (transient ? ` <span class="warn-badge" title="${(a.probe_error || '').replace(/"/g, '&quot;')}">⚠ Fastly chặn tạm thời — account vẫn hoạt động bình thường</span>` : '') +
       (!isDead && !transient && a.probe_error ? ` <span class="muted" title="${a.probe_error.replace(/"/g, '&quot;')}">⚠ probe: ${a.probe_error.length > 90 ? a.probe_error.slice(0, 90) + '…' : a.probe_error}</span>` : '') +
-      (a.refreshed_at ? ` <span class="muted" title="Lần refresh token gần nhất bởi token keeper">✓ refresh ${new Date(a.refreshed_at).toLocaleString()}</span>` : '');
+      (a.refreshed_at && new Date(a.refreshed_at).getFullYear() > 2000 ? ` <span class="muted" title="Lần refresh token gần nhất bởi token keeper">✓ refresh ${new Date(a.refreshed_at).toLocaleString()}</span>` : '');
     if (active) li.classList.add('account-active');
     const use = document.createElement('button');
     use.type = 'button';
@@ -132,7 +132,10 @@ async function loadAccounts() {
       use.disabled = true;
       use.textContent = 'Đang chuyển…';
       const res = await api('accounts/select', 'POST', { email: a.email });
-      if (res.error) {
+      if (res.note) {
+        // Chuyển thành công nhưng có lưu ý (failover/proxy chưa restart).
+        alert('Chuyển account: ' + res.note);
+      } else if (res.error) {
         use.textContent = 'Dùng account này';
         use.disabled = false;
         alert('Chuyển account: ' + res.error);

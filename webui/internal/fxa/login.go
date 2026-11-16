@@ -118,6 +118,11 @@ func RefreshToken(ctx context.Context, refreshToken string) (*TokenResponse, err
 		"grant_type":    "refresh_token",
 		"refresh_token": refreshToken,
 		"scope":         OAuthScope,
+		// Ask for the maximum access-token TTL (6h — FxA caps the VPN
+		// client here). Without it the refresh grant returns the much
+		// shorter default (~1h), so tokens "expire" far sooner than the
+		// fxa-credentials grant's tokens and the rotator keeps churning.
+		"ttl": 21600,
 	}
 	data, status, err := postJSON(ctx, AuthServer+"/oauth/token", body)
 	if err != nil {
