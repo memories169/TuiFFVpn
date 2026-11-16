@@ -323,6 +323,9 @@ func findBrowser(explicit string) (string, error) {
 	candidates := []string{
 		"google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
 		"chrome", "microsoft-edge", "brave-browser", "headless_shell",
+		// Helium (https://github.com/imputnet/helium) — privacy-hardened
+		// Chromium fork; its binary and desktop entry are "helium".
+		"helium", "helium-browser",
 	}
 	for _, name := range candidates {
 		if p, err := exec.LookPath(name); err == nil {
@@ -332,6 +335,8 @@ func findBrowser(explicit string) (string, error) {
 	for _, p := range []string{
 		"/usr/bin/google-chrome", "/usr/local/bin/google-chrome",
 		"/usr/bin/chromium", "/usr/bin/chromium-browser",
+		// Helium install locations (official .deb/AppImage / make install).
+		"/usr/bin/helium", "/usr/local/bin/helium", "/opt/helium/helium",
 		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 		`C:\Program Files\Google\Chrome\Application\chrome.exe`,
 	} {

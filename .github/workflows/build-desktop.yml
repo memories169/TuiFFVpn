@@ -1,0 +1,192 @@
+name: build-desktop
+
+# Build the native Linux desktop app (fxvpn-desktop) on every push to main,
+# on version tags, and on manual dispatch. Binaries are attached to GitHub
+# Releases for tag builds; main builds produce download artifacts.
+#
+# Build matrix:
+#   linux-amd64  — ubuntu-22.04 runner (glibc 2.35; the oldest widely used
+#                  baseline — runs on Debian 12+, Ubuntu 22.04+, Fedora 38+)
+#   linux-arm64  — ubuntu-22.04-arm runner, same flags
+#   appimage     — AppImage wrapper over the linux-amd64 build so users can
+#                  run it without installing anything
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write # release upload for tag builds
+
+env:
+  GO_VERSION: "1.22"
+  PKG: ./webui/desktop/cmd/fxvpn-desktop
+
+jobs:
+  linux:
+    name: linux-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # Native build needs the Wayland/X11/xkbcommon/GL dev headers.
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libx11-dev libx11-xcb-dev \
+            libgl-dev libegl-dev libgles2-dev libvulkan-dev
+
+      - name: Vet
+        run: go vet ./webui/...
+
+      - name: Run Go tests
+        run: go test -count=1 ./webui/...
+
+      - name: Build fxvpn-desktop (linux-${{ matrix.arch }})
+        run: |
+          go build -trimpath \
+            -ldflags="-s -w -X main.version=${GITHUB_REF_NAME:-dev}-${GITHUB_SHA::7}" \
+            -o fxvpn-desktop-linux-${{ matrix.arch }} ${{ env.PKG }}
+
+      - name: Smoke test (binary runs, prints version)
+        run: ./fxvpn-desktop-linux-${{ matrix.arch }} --version
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fxvpn-desktop-linux-${{ matrix.arch }}
+          path: fxvpn-desktop-linux-${{ matrix.arch }}
+          retention-days: 14
+
+  appimage:
+    # AppImage: single-file, distro-agnostic Linux build. Bundles the
+    # required shared libraries so it runs even where the dev libs above
+    # were never installed (only a working display session is needed).
+    name: appimage-amd64
+    runs-on: ubuntu-22.04
+    needs: linux
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libx11-dev libx11-xcb-dev \
+            libgl-dev libegl-dev libgles2-dev libvulkan-dev \
+            file desktop-file-utils
+
+      - name: Build binary
+        run: |
+          go build -trimpath \
+            -ldflags="-s -w -X main.version=${GITHUB_REF_NAME:-dev}-${GITHUB_SHA::7}" \
+            -o fxvpn-desktop ${{ env.PKG }}
+
+      - name: Download linuxdeploy
+        run: |
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage
+
+      - name: Assemble AppDir
+        run: |
+          mkdir -p AppDir/usr/bin AppDir/usr/share/applications \
+                   AppDir/usr/share/icons/hicolor/256x256/apps
+          cp fxvpn-desktop AppDir/usr/bin/
+          cat > AppDir/usr/share/applications/fxvpn.desktop <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=fxvpn — Firefox VPN
+          Comment=Firefox VPN console (SOCKS5 over MASQUE)
+          Exec=fxvpn-desktop
+          Icon=fxvpn
+          Categories=Network;
+          EOF
+          # Placeholder icon (256x256 PNG) — replace with a real one when
+          # available; AppImage requires *some* icon to be valid.
+          python3 - <<'PY'
+          import struct, zlib
+          w = h = 256
+          raw = b''.join(b'\x00' + bytes([0x24, 0x27, 0x3a]) * w for _ in range(h))
+          def chunk(t, d):
+              c = t + d
+              return struct.pack('>I', len(d)) + c + struct.pack('>I', zlib.crc32(c))
+          ihdr = struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)
+          png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', ihdr) + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b'')
+          open('AppDir/usr/share/icons/hicolor/256x256/apps/fxvpn.png', 'wb').write(png)
+          PY
+          # AppStream metadata (optional but linuxdeploy warns without it).
+          mkdir -p AppDir/usr/share/metainfo
+          cat > AppDir/usr/share/metainfo/fxvpn.appdata.xml <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <component type="desktop-application">
+            <id>com.fxvpn.desktop</id>
+            <name>fxvpn</name>
+            <summary>Firefox VPN console (SOCKS5 over MASQUE)</summary>
+            <metadata_license>FSFAP</metadata_license>
+            <project_license>GPL-3.0-only</project_license>
+            <launchable type="desktop-id">fxvpn.desktop</launchable>
+          </component>
+          EOF
+
+      - name: Build AppImage
+        run: |
+          ./linuxdeploy-x86_64.AppImage --appdir AppDir --output appimage
+          mv fxvpn-desktop*.AppImage fxvpn-desktop-x86_64.AppImage
+
+      - name: Smoke test AppImage
+        run: |
+          chmod +x fxvpn-desktop-x86_64.AppImage
+          ./fxvpn-desktop-x86_64.AppImage --appimage-extract-and-run --version
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fxvpn-desktop-x86_64.AppImage
+          path: fxvpn-desktop-x86_64.AppImage
+          retention-days: 14
+
+  release:
+    # Attach all binaries to the GitHub Release for tag builds (v*).
+    name: release
+    runs-on: ubuntu-latest
+    needs: [linux, appimage]
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

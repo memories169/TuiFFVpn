@@ -14,6 +14,22 @@ file của container nếu muốn dùng lại account đã thêm.
 - **Go ≥ 1.21** (`go version` để kiểm tra)
 - `git`, `make`, `gcc` (cgo cần gcc để link Wayland/X11/Vulkan)
 
+### Tải bản dựng sẵn (không cần build)
+
+Mỗi push lên `main` và mỗi tag `v*` đều được GitHub Actions build sẵn
+(`.github/workflows/build-desktop.yml`): binary `linux-amd64`, `linux-arm64`
+và AppImage. Tải tại trang
+[Releases](https://github.com/memories169/TuiFFVpn/releases) (tag) hoặc tab
+**Actions → build-desktop → chọn run → Artifacts** (main). AppImage chạy
+ngay không cần cài lib dev:
+
+```bash
+chmod +x fxvpn-desktop-x86_64.AppImage
+./fxvpn-desktop-x86_64.AppImage
+```
+
+Muốn build từ nguồn thì làm tiếp các bước dưới.
+
 ## 2. Cài thư viện hệ thống
 
 Chạy **một** khối lệnh đúng distro của bạn. Đây là các gói `-dev`/`-devel`
