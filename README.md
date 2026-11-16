@@ -34,12 +34,12 @@ browser ──► :9090 (Web console)
 - **Persists** your OAuth tokens and the selected server to a state file
   (`0600`, atomic write), so a restart reuses them.
 
-## Native Linux desktop app (Catppuccin Macchiato)
+## Native desktop app — Linux · Windows · macOS (Catppuccin Macchiato)
 
-fxvpn-desktop là **app native Linux** (Gio UI, không Electron/webview) chạy
-**cùng một engine Go** với web console — token keeper, rotator, MASQUE dialer,
-SOCKS5 — nhưng in-process, **không cần Docker và không có màn hình đăng nhập
-admin**:
+fxvpn-desktop là **app native** (Gio UI, không Electron/webview) chạy
+**cùng một engine Go** với web console trên cả 3 nền tảng — token keeper,
+rotator, MASQUE dialer, SOCKS5 — nhưng in-process, **không cần Docker và
+không có màn hình đăng nhập admin**:
 
 - Tab **Trạng thái** — trạng thái tunnel, kết nối lại/ngắt, test nhanh
 - Tab **Account** — thêm account (đăng nhập + 2FA hoặc dán token), danh sách
@@ -50,14 +50,20 @@ admin**:
   tiếng Việt (⚠ Fastly tạm thời ≠ ⛔ token chết, đúng như web console)
 
 ```bash
-make                 # cần libxkbcommon/wayland/x11/gl dev headers
-make cpu             # không có Vulkan/GPU
+make                 # Linux — cần libxkbcommon/wayland/x11/gl dev headers
+make cpu             # Linux — không có Vulkan/GPU
+# Windows: go build -tags nometal -o fxvpn-desktop.exe ./webui/desktop/cmd/fxvpn-desktop
+# macOS:   go build -o fxvpn-desktop ./webui/desktop/cmd/fxvpn-desktop (cần Xcode CLT)
 ```
 
-Chi tiết cài đặt theo distro: [docs/desktop-linux.md](docs/desktop-linux.md)
+Bản dựng sẵn cho cả 3 nền tảng (linux-amd64/arm64 + AppImage, windows-amd64,
+macos-amd64/arm64) do GitHub Actions tạo tại
+[Releases](https://github.com/memories169/TuiFFVpn/releases).
+
+Chi tiết cài đặt: Linux [docs/desktop-linux.md](docs/desktop-linux.md) (theo distro)
 · Docker: [docs/install-docker.md](docs/install-docker.md)
-· Windows (WSL2): [docs/install-windows.md](docs/install-windows.md)
-· macOS: [docs/install-macos.md](docs/install-macos.md)
+· Windows (native): [docs/install-windows.md](docs/install-windows.md)
+· macOS (native): [docs/install-macos.md](docs/install-macos.md)
 
 State file mặc định `~/.local/state/fxvpn/state.json` — cùng schema với
 container, trỏ `--state` vào file của container để dùng lại account có sẵn.

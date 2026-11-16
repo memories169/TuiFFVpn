@@ -337,8 +337,19 @@ func findBrowser(explicit string) (string, error) {
 		"/usr/bin/chromium", "/usr/bin/chromium-browser",
 		// Helium install locations (official .deb/AppImage / make install).
 		"/usr/bin/helium", "/usr/local/bin/helium", "/opt/helium/helium",
+		// macOS bundle layouts (Chrome/Chromium/Edge/Brave/Helium).
 		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+		"/Applications/Chromium.app/Contents/MacOS/Chromium",
+		"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+		"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+		"/Applications/Helium.app/Contents/MacOS/Helium",
+		// Windows install layouts (per-user %LOCALAPPDATA% and system-wide).
 		`C:\Program Files\Google\Chrome\Application\chrome.exe`,
+		`C:\Program Files (x86)\Google\Chrome\Application\chrome.exe`,
+		`C:\Program Files\Chromium\Application\chrome.exe`,
+		`C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`,
+		`C:\Program Files\Microsoft\Edge\Application\msedge.exe`,
+		`C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe`,
 	} {
 		if _, err := os.Stat(p); err == nil {
 			return p, nil

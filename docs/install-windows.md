@@ -1,35 +1,63 @@
-# Cài đặt — Windows (WSL2 hoặc web console)
+# Cài đặt trên Windows
 
-Engine MASQUE/SOCKS5 chạy tốt trên Windows qua **WSL2**; GUI native desktop
-hiện chỉ build cho Linux (Gio hỗ trợ Windows — port có thể làm sau, xem
-`webui/desktop` — nhưng phần đóng gói trong repo này nhắm Linux trước).
+App desktop native **fxvpn** chạy trực tiếp trên Windows 10/11 — dùng cùng
+engine Go với bản Linux (token keeper, rotator, MASQUE, SOCKS5), không cần
+Docker, không cần màn hình đăng nhập admin.
 
-## Cách 1 — Web console trong WSL2 (khuyên dùng)
+## Cách 1 — Tải bản dựng sẵn (khuyên dùng)
 
-1. Cài [WSL2](https://learn.microsoft.com/vi-vn/windows/wsl/install):
-   ```powershell
-   wsl --install -d Debian
-   ```
-2. Trong WSL: cài Go ≥ 1.21 + git, clone repo, build bản console (không cần
-   thư viện GUI):
-   ```bash
-   sudo apt-get update && sudo apt-get install -y golang-go git
-   git clone https://github.com/memories169/TuiFFVpn.git && cd TuiFFVpn
-   CGO_ENABLED=0 go build -o fxvpn-webui ./webui/cmd/fxvpn-webui
-   ./fxvpn-webui -http :9090 -socks 127.0.0.1:1080 -state ~/fxvpn-state.json
-   ```
-3. Trên Windows: mở `http://localhost:9090` — console đầy đủ tính năng.
-4. Trỏ app Windows (Firefox, v.v.) tới SOCKS5 `127.0.0.1:1080` (WSL2 tự
-   forward localhost).
+Mỗi push lên `main` và mỗi tag `v*` được GitHub Actions build tại
+[Releases](https://github.com/memories169/TuiFFVpn/releases) (tab
+**Actions → build-desktop** cho bản main):
 
-## Cách 2 — Docker Desktop
+```powershell
+# Tải fxvpn-desktop-windows-amd64.exe, đổi tên cho gọn rồi chạy:
+Invoke-WebRequest <link-từ-Releases> -OutFile fxvpn.exe
+.\fxvpn.exe
+```
 
-Cài Docker Desktop cho Windows, sau đó làm đúng phần
-[install-docker.md](install-docker.md) trong PowerShell.
+Windows có thể hiện SmartScreen lần đầu — bấm **More info → Run anyway**
+(binary chưa ký số).
 
-## Ghi chú
+## Cách 2 — Build từ nguồn
 
-- Tường lửa Windows có thể hỏi lần đầu khi SOCKS5 listen ngoài localhost —
-  chọn "Chỉ mạng riêng".
-- Fastly CAPTCHA (⚠ trong console) là chặn IP: đổi IP VPS/network hoặc chờ —
-  không phải lỗi account.
+### Điều kiện
+
+- **Go ≥ 1.21** — [go.dev/dl](https://go.dev/dl/) (MSI, mặc định `C:\Program Files\Go`)
+- **Git** — [git-scm.com](https://git-scm.com/download/win)
+- Không cần cgo, không cần MinGW, không cần trình biên dịch C — backend
+  Direct3D/GDI của Gio thuần Go.
+
+### Build
+
+```powershell
+git clone https://github.com/memories169/TuiFFVpn.git
+cd TuiFFVpn
+go build -tags nometal -o fxvpn-desktop.exe .\webui\desktop\cmd\fxvpn-desktop
+.\fxvpn-desktop.exe
+```
+
+(`nometal` tắt backend Metal — chỉ dành cho macOS; Windows dùng backend
+win32 thuần Go.)
+
+## Chạy
+
+- Cửa sổ app mở ra với 4 tab: **Trạng thái / Account / Vị trí / Test**
+- Đăng nhập account: bấm **🌐 Đăng nhập qua trình duyệt** — app tự mở
+  Chrome/Edge/Brave/Helium cài sẵn trên máy, bạn đăng nhập Firefox account
+  trong đó, token được bắt tự động (không cần userscript). Không có trình
+  duyệt nào? Dán token thủ công vào khung dưới cùng.
+- SOCKS5 proxy lắng nghe `127.0.0.1:1080` (đổi bằng `--socks 127.0.0.1:9999`)
+- Cấu hình lưu tại `%AppData%\fxvpn\state.json`
+
+## Dùng chung account với bản Docker
+
+State file giống hệt schema của container. Copy `state.json` của container
+vào `%AppData%\fxvpn\state.json` (hoặc chạy
+`fxvpn-desktop.exe --state C:\đường\dẫn\state.json`) để dùng lại toàn bộ
+account có sẵn.
+
+## Gỡ cài đặt
+
+Xoá `fxvpn-desktop.exe` và thư mục `%AppData%\fxvpn\` — không có gì khác
+bị cài vào hệ thống.

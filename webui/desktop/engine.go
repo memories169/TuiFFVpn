@@ -27,6 +27,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -55,20 +56,37 @@ type Engine struct {
 	servers []serverlist.Country // cache of the last successful fetch
 }
 
-// DefaultStatePath returns the per-user state file:
-// $XDG_STATE_HOME/fxvpn/state.json (defaulting to ~/.local/state/fxvpn/state.json).
-// FXVPN_STATE_FILE overrides it (handy for pointing the desktop app at a
-// container's state.json for a one-off import).
+// DefaultStatePath returns the per-user state file, following the platform
+// convention:
+//
+//	Windows: %AppData%\fxvpn\state.json (C:\Users\<u>\AppData\Roaming)
+//	macOS:   ~/Library/Application Support/fxvpn/state.json
+//	Linux:   $XDG_STATE_HOME/fxvpn/state.json (default ~/.local/state/fxvpn)
+//
+// FXVPN_STATE_FILE overrides it on every platform (handy for pointing the
+// desktop app at a container's state.json for a one-off import).
 func DefaultStatePath() string {
 	if p := os.Getenv("FXVPN_STATE_FILE"); p != "" {
 		return p
 	}
-	dir := os.Getenv("XDG_STATE_HOME")
-	if dir == "" {
+	switch runtime.GOOS {
+	case "windows":
+		if dir := os.Getenv("AppData"); dir != "" {
+			return filepath.Join(dir, "fxvpn", "state.json")
+		}
 		home, _ := os.UserHomeDir()
-		dir = filepath.Join(home, ".local", "state")
+		return filepath.Join(home, "AppData", "Roaming", "fxvpn", "state.json")
+	case "darwin":
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, "Library", "Application Support", "fxvpn", "state.json")
+	default:
+		dir := os.Getenv("XDG_STATE_HOME")
+		if dir == "" {
+			home, _ := os.UserHomeDir()
+			dir = filepath.Join(home, ".local", "state")
+		}
+		return filepath.Join(dir, "fxvpn", "state.json")
 	}
-	return filepath.Join(dir, "fxvpn", "state.json")
 }
 
 // DefaultProxyAddr is the SOCKS5 listen address for the desktop app.

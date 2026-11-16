@@ -12,16 +12,20 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-// Command fxvpn-desktop is the native Linux desktop app: a Gio window over
-// the in-process fxvpn engine (token keeper, rotator, MASQUE dialer, SOCKS5
-// proxy) — no container, no admin login, no browser required.
+// Command fxvpn-desktop is the native desktop app for Linux, Windows and
+// macOS: a Gio window over the in-process fxvpn engine (token keeper,
+// rotator, MASQUE dialer, SOCKS5 proxy) — no container, no admin login, no
+// browser required.
 //
-// Build (on a Linux machine with the dev headers installed):
+// Build on the matching platform (Gio needs the native window/GL toolchain):
 //
-//	make -f desktop/Makefile            # or: go build -o fxvpn-desktop ./desktop
+//	Linux:   make                       (libxkbcommon/wayland/x11/gl dev headers)
+//	Windows: go build -tags nometal -o fxvpn-desktop.exe ./webui/desktop/cmd/fxvpn-desktop
+//	         (uses the pure-Go Direct3D/GDI path; no cgo toolchain needed)
+//	macOS:   go build -o fxvpn-desktop ./webui/desktop/cmd/fxvpn-desktop
+//	         (needs Xcode command line tools for the Metal cgo backend)
 //
-// Runtime deps on the user machine: libxkbcommon, wayland or X11, GL/EGL —
-// see docs/desktop-linux.md for per-distro install commands.
+// See docs/install-windows.md and docs/install-macos.md.
 package main
 
 import (

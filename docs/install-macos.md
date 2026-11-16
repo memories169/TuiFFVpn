@@ -1,33 +1,67 @@
-# Cài đặt — macOS
+# Cài đặt trên macOS
 
-Engine chạy được trên macOS (Intel và Apple Silicon) qua bản web console.
-GUI desktop trong repo nhắm Linux; Gio có backend macOS nên port sau có thể
-làm trực tiếp từ `webui/desktop`.
+App desktop native **fxvpn** chạy trực tiếp trên macOS 12+ (Intel và Apple
+Silicon) — dùng cùng engine Go với bản Linux (token keeper, rotator,
+MASQUE, SOCKS5), không cần Docker, không cần màn hình đăng nhập admin.
 
-## Cách 1 — Homebrew Go, chạy console native
+## Cách 1 — Tải bản dựng sẵn (khuyên dùng)
+
+Mỗi push lên `main` và mỗi tag `v*` được GitHub Actions build tại
+[Releases](https://github.com/memories169/TuiFFVpn/releases) (tab
+**Actions → build-desktop** cho bản main):
 
 ```bash
-brew install go git
-git clone https://github.com/memories169/TuiFFVpn.git && cd TuiFFVpn
-CGO_ENABLED=0 go build -o fxvpn-webui ./webui/cmd/fxvpn-webui
-./fxvpn-webui -http :9090 -socks 127.0.0.1:1080 -state ~/Library/Application\ Support/fxvpn/state.json
+# Intel:
+curl -LO <link fxvpn-desktop-macos-amd64-từ-Releases>
+mv fxvpn-desktop-macos-amd64 fxvpn && chmod +x fxvpn
+
+# Apple Silicon (M1/M2/M3/M4):
+curl -LO <link fxvpn-desktop-macos-arm64-từ-Releases>
+mv fxvpn-desktop-macos-arm64 fxvpn && chmod +x fxvpn
+
+./fxvpn
 ```
 
-Mở `http://localhost:9090`.
+Lần chạy đầu macOS có thể chặn vì binary chưa ký/notarize: **System
+Settings → Privacy & Security → nút "Open Anyway"** (hoặc
+`xattr -d com.apple.quarantine fxvpn`).
 
-## Cách 2 — Docker
+## Cách 2 — Build từ nguồn
 
-Docker Desktop cho Mac chạy image như [install-docker.md](install-docker.md).
+### Điều kiện
 
-## SOCKS5 cho app macOS
+- **Go ≥ 1.21** — `brew install go` hoặc [go.dev/dl](https://go.dev/dl/)
+- **Xcode Command Line Tools** — `xcode-select --install` (backend Metal
+  của Gio là cgo với framework hệ thống — bắt buộc trên macOS)
+- **Chrome/Chromium/Edge/Brave/Helium** để dùng đăng nhập qua trình duyệt
+  (không bắt buộc — có thể dán token thủ công)
 
-System Settings → Network → chi tiết kết nối → Proxies → SOCKS proxy:
-`127.0.0.1:1080`. Hoặc chỉ đặt cho từng app (Firefox riêng là đủ — hệ thống
-proxy sẽ bắt cả traffic Apple).
+### Build
 
-## Ghi chú
+```bash
+git clone https://github.com/memories169/TuiFFVpn.git
+cd TuiFFVpn
+go build -o fxvpn-desktop ./webui/desktop/cmd/fxvpn-desktop
+./fxvpn-desktop
+```
 
-- macOS 13+ dùng ~6h token Mozilla như mọi nền tảng; rotator/keeper chạy
-  trong console tự gia hạn.
-- Sau khi Mac ngủ, tunnel MASQUE tự dựng lại ở lần request tiếp theo; nếu
-  không, bấm "Kết nối lại" trong tab Trạng thái.
+## Chạy
+
+- Cửa sổ app mở ra với 4 tab: **Trạng thái / Account / Vị trí / Test**
+- Đăng nhập account: bấm **🌐 Đăng nhập qua trình duyệt** — app tự mở
+  Chrome/Edge/Brave/Helium trong `/Applications`, bạn đăng nhập Firefox
+  account trong đó, token được bắt tự động (không cần userscript)
+- SOCKS5 proxy lắng nghe `127.0.0.1:1080` (đổi bằng `--socks 127.0.0.1:9999`)
+- Cấu hình lưu tại `~/Library/Application Support/fxvpn/state.json`
+
+## Dùng chung account với bản Docker
+
+State file giống hệt schema của container. Copy `state.json` của container
+vào `~/Library/Application Support/fxvpn/state.json` (hoặc chạy
+`./fxvpn-desktop --state /đường/dẫn/state.json`) để dùng lại toàn bộ
+account có sẵn.
+
+## Gỡ cài đặt
+
+Xoá binary và thư mục `~/Library/Application Support/fxvpn/` — app không
+cài gì khác vào hệ thống.
