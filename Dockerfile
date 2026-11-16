@@ -1,6 +1,10 @@
 # syntax=docker/dockerfile:1
 # Build stage.
-FROM golang:1.20-alpine AS build
+# Go 1.22: the shared go.mod declares go 1.21 (the desktop GUI's Gio needs
+# it). The container binaries themselves never import the GUI package, so
+# Gio is downloaded but never compiled — CGO stays off and the image ships
+# no GUI libraries.
+FROM golang:1.22-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

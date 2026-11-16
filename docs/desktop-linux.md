@@ -41,7 +41,7 @@ Chạy **một** khối lệnh đúng distro của bạn. Đây là các gói `-
 sudo apt-get update
 sudo apt-get install -y build-essential git make \
   libxkbcommon-dev libwayland-dev libx11-dev libx11-xcb-dev \
-  libgl-dev libegl-dev libgles2-dev libvulkan-dev
+  libgl-dev libegl-dev libvulkan-dev
 ```
 
 ### Fedora / RHEL / CentOS Stream / Rocky / Alma
