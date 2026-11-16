@@ -27,6 +27,10 @@ import (
 	"fxsocks/webui/internal/state"
 )
 
+// errNoRefreshToken marks an account that cannot be refreshed because it has
+// no refresh token on file (needs re-adding) — not a transient condition.
+var errNoRefreshToken = errors.New("no refresh token on file (re-add the account)")
+
 // rotateSettings drives the automatic account rotation: when the active
 // account's access token is close to expiring (or its quota is nearly burnt),
 // switch to the healthiest other account and keep the proxy on it. Firefox
@@ -210,15 +214,23 @@ func (a *App) rotateOnce() {
 	log.Printf("rotator: account %s needs attention (refresh=%v lowQuota=%v)", email, needsRefresh, lowQuota)
 
 	// Try refreshing in place first — cheap and keeps the same account.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	if a.refreshAccount(ctx, email) {
-		cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	err := a.refreshAccountErr(ctx, email)
+	cancel()
+	if err == nil {
 		log.Printf("rotator: refreshed %s in place", email)
 		return
 	}
-	cancel()
+	if isTransientRefreshErr(err) {
+		// Fastly CAPTCHA / network hiccup — the account is fine and the VPN
+		// keeps working. Rotating now would switch to a random other account
+		// for no reason (and its refresh would hit the same wall). Keep the
+		// current account; the next pass retries.
+		log.Printf("rotator: refresh of %s hit a transient edge (%v) — account kept, will retry next pass", email, err)
+		return
+	}
 
-	// Refresh failed (token revoked?) — rotate through the healthy
+	// Refresh genuinely failed (token revoked?) — rotate through the healthy
 	// alternatives, best quota first, until one yields a working proxy pass.
 	alts := a.pickAlternates(email)
 	if len(alts) == 0 {
@@ -308,6 +320,12 @@ func (a *App) activateAccount(email string) bool {
 // Goes through refreshAccountToken (webapp.go) so concurrent rotations never
 // race the rotating one-time-use FxA refresh token.
 func (a *App) refreshAccount(ctx context.Context, email string) bool {
+	return a.refreshAccountErr(ctx, email) == nil
+}
+
+// refreshAccountErr is refreshAccount with the failure reason for callers
+// that need to distinguish a dead grant from a transient edge block.
+func (a *App) refreshAccountErr(ctx context.Context, email string) error {
 	a.mu.Lock()
 	ac := a.Store.FindAccount(email)
 	refresh := ""
@@ -316,14 +334,16 @@ func (a *App) refreshAccount(ctx context.Context, email string) bool {
 	}
 	a.mu.Unlock()
 	if refresh == "" {
-		return false
+		return errNoRefreshToken
 	}
 	tok, err := a.refreshAccountToken(ctx, email, refresh)
 	if err != nil {
-		log.Printf("rotator: refresh %s failed: %v", email, err)
-		return false
+		return err
 	}
-	return tok != ""
+	if tok == "" {
+		return errNoRefreshToken
+	}
+	return nil
 }
 
 // pickAlternates lists the OTHER healthy accounts, most remaining quota

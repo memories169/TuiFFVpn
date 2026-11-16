@@ -20,6 +20,13 @@ button:hover { filter: brightness(1.08); }
 .account-list { list-style: none; margin: 8px 0 0; padding: 0; }
 /* Danh sách account dài: cuộn trong card thay vì kéo cả trang. */
 .account-list-scroll { max-height: 420px; overflow-y: auto; }
+.account-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 8px 0 4px; }
+.account-actions button { margin-top: 0; }
+/* Trạng thái từng account: ⛔ token chết thật, ⚠ cảnh báo tạm thời (Fastly). */
+.dead-badge { color: #d70022; font-size: 12px; font-weight: 600; }
+.warn-badge { color: #b8860b; font-size: 12px; }
+[data-theme="dark"] .dead-badge { color: #ff6b6b; }
+[data-theme="dark"] .warn-badge { color: #f5c542; }
 .account-item { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 0; border-bottom: 1px dashed var(--border); }
 .account-item:last-child { border-bottom: 0; }
 .account-item span { flex: 1; min-width: 200px; }

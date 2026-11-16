@@ -116,11 +116,27 @@ The keeper refreshes accounts **concurrently** (`FXVPN_KEEPER_WORKERS`,
 default 4): the whole list heals in one pass no matter how many accounts
 you store, so account #100 no longer waits behind #1–#99 while its token
 decays. Each account's refresh is gated per account — a slow or dead
-account never blocks the others. Failures are logged per account
-(`keeper: <email> refresh failed`) and surfaced in the UI on that account
-only (⛔ token: …) — that account's FxA session was destroyed server-side
-(e.g. sign-out or password change) and needs re-adding; every other
-account keeps rotating normally.
+account never blocks the others.
+
+Failures are split into two very different kinds, both shown in the UI:
+
+- ⚠ **Transient (Fastly anti-bot / network)** — `fastly anti-bot challenge`,
+  connection resets, 5xx/429. Fastly serves the container's IP a CAPTCHA it
+  cannot solve automatically; **the account is fine and the VPN keeps
+  working** (token refresh is only needed hours later, and the edge block
+  usually clears in minutes). Shown as an amber warning, retried
+  automatically (one spaced retry per refresh, then again on the next
+  keeper/rotation pass), and NEVER treated as a dead account — the rotator
+  does not switch away from an account whose refresh merely hit the wall.
+- ⛔ **Dead grant** — a clean HTTP 400/401/403 from FxA: the account's
+  session was destroyed server-side (password change, sign-out everywhere).
+  Shown in red on that account only; re-adding the account is the fix, and
+  every other account keeps rotating normally.
+
+You can also refresh every account's tokens **manually**: the
+**“🔄 Refresh token tất cả account”** button in the account tab runs a
+keeper pass on demand (active account included, same worker pool, one pass
+at a time) and per-account ✓/⚠/⛔ states update live in the list.
 
 ### Automatic rotation
 

@@ -192,6 +192,8 @@ func postJSONHawk(ctx context.Context, url string, body map[string]any, id strin
 // fxaRetry performs the request via the shared control-plane client. When the
 // edge answers HTTP 406 (Fastly anti-bot challenge, empty body), it solves the
 // challenge and retries with the earned cookie, up to maxChallengeAttempts.
+// Every challenge-solver failure is wrapped in ErrFastlyChallenge — a
+// transient, network-level condition (the account itself is fine).
 func fxaRetry(ctx context.Context, newRequest func() (*http.Request, error)) ([]byte, int, error) {
 	for attempt := 1; attempt <= maxChallengeAttempts; attempt++ {
 		req, err := newRequest()
@@ -208,8 +210,8 @@ func fxaRetry(ctx context.Context, newRequest func() (*http.Request, error)) ([]
 			return data, resp.StatusCode, nil
 		}
 		if err := solveFastlyChallenge(ctx); err != nil {
-			return nil, resp.StatusCode, fmt.Errorf("fastly challenge: %w", err)
+			return nil, resp.StatusCode, fmt.Errorf("%w: %v", ErrFastlyChallenge, err)
 		}
 	}
-	return nil, http.StatusNotAcceptable, fmt.Errorf("fastly challenge still failing after %d attempts", maxChallengeAttempts)
+	return nil, http.StatusNotAcceptable, fmt.Errorf("%w: still failing after %d attempts", ErrFastlyChallenge, maxChallengeAttempts)
 }

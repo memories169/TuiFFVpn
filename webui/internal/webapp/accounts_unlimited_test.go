@@ -16,6 +16,7 @@ package webapp
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -25,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"fxsocks/webui/internal/fxa"
 	"fxsocks/webui/internal/state"
 )
 
@@ -211,4 +213,31 @@ func itoa(i int) string {
 		i /= 10
 	}
 	return digits
+}
+
+// A Fastly CAPTCHA block is transient: it must NOT be recorded as a dead
+// RefreshError (the account keeps working), while a real HTTP 401 must be.
+func TestTransientVsDeadRefreshErrors(t *testing.T) {
+	if !isTransientRefreshErr(fxa.ErrFastlyChallenge) {
+		t.Fatal("fastly sentinel must be transient")
+	}
+	for _, msg := range []string{
+		"fastly challenge: Fastly is serving a CAPTCHA challenge",
+		"Get https://api.accounts.firefox.com/v1/oauth/token: dial tcp 1.2.3.4:443: connection reset by peer",
+		"refresh failed (HTTP 503): upstream unavailable",
+		"context deadline exceeded",
+	} {
+		if !isTransientRefreshErr(errors.New(msg)) {
+			t.Fatalf("%q should be transient", msg)
+		}
+	}
+	for _, msg := range []string{
+		"refresh failed (HTTP 401): invalid refresh token",
+		"refresh failed (HTTP 400): unknown token",
+		"oauth token failed (HTTP 403): session expired",
+	} {
+		if isTransientRefreshErr(errors.New(msg)) {
+			t.Fatalf("%q should NOT be transient (grant is dead)", msg)
+		}
+	}
 }

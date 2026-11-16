@@ -108,11 +108,19 @@ async function loadAccounts() {
     const quota = a.quota_left === '' ? '?' : a.quota_left;
     const active = a.active;
     const span = document.createElement('span');
+    // refresh_error = token CHẾT thật (HTTP 400/401/403: đổi mật khẩu,
+    // sign-out) → ⛔ cần thêm lại account. probe_error chứa lỗi Fastly
+    // tạm thời → ⚠ account vẫn hoạt động bình thường (VPN vẫn chạy), chỉ
+    // là edge đang chặn IP server, sẽ tự retry.
+    const isDead = a.has_token && a.refresh_error;
+    const transient = !isDead && (a.probe_error || '').toLowerCase().includes('fastly') ||
+                      !isDead && (a.probe_error || '').toLowerCase().includes('refresh:');
     span.innerHTML = `<b>${a.email}</b>${active ? ' <span class="active-badge">● đang dùng</span>' : ''}` +
       ` — Quota: ${quota} / ${a.quota_max || '?'}` +
       (a.has_token ? '' : ' <span class="muted">(chưa có token — bấm "Dùng account này" trên account khác, hoặc thêm lại account này)</span>') +
-      (a.refresh_error ? ` <span class="muted" title="${a.refresh_error.replace(/"/g, '&quot;')}">⛔ token: ${a.refresh_error.length > 90 ? a.refresh_error.slice(0, 90) + '…' : a.refresh_error}</span>` : '') +
-      (a.probe_error ? ` <span class="muted" title="${a.probe_error.replace(/"/g, '&quot;')}">⚠ probe: ${a.probe_error.length > 90 ? a.probe_error.slice(0, 90) + '…' : a.probe_error}</span>` : '') +
+      (isDead ? ` <span class="dead-badge" title="${a.refresh_error.replace(/"/g, '&quot;')}">⛔ token chết: ${a.refresh_error.length > 90 ? a.refresh_error.slice(0, 90) + '…' : a.refresh_error}</span>` : '') +
+      (transient ? ` <span class="warn-badge" title="${(a.probe_error || '').replace(/"/g, '&quot;')}">⚠ Fastly chặn tạm thời — account vẫn hoạt động bình thường</span>` : '') +
+      (!isDead && !transient && a.probe_error ? ` <span class="muted" title="${a.probe_error.replace(/"/g, '&quot;')}">⚠ probe: ${a.probe_error.length > 90 ? a.probe_error.slice(0, 90) + '…' : a.probe_error}</span>` : '') +
       (a.refreshed_at ? ` <span class="muted" title="Lần refresh token gần nhất bởi token keeper">✓ refresh ${new Date(a.refreshed_at).toLocaleString()}</span>` : '');
     if (active) li.classList.add('account-active');
     const use = document.createElement('button');
@@ -312,4 +320,42 @@ $('pass-form').addEventListener('submit', async (e) => {
   const res = await api('admin/change-password', 'POST', { current: $('cur-pass').value, next: $('new-pass').value });
   if (res.ok) { $('pass-error').textContent = 'Đã đổi mật khẩu.'; $('cur-pass').value = ''; $('new-pass').value = ''; }
   else { $('pass-error').textContent = res.error || 'Đổi mật khẩu thất bại'; }
+});
+
+// ---- Refresh token tất cả account (thủ công) ----
+// Gọi /api/accounts/refresh-all: server chạy nền một đợt refresh mọi
+// account (giống token keeper). Lỗi Fastly tạm thời chỉ là ⚠; lỗi token
+// chết thật mới là ⛔. Danh sách tự cập nhật trong lúc chạy; GET endpoint
+// trả running để biết khi nào xong.
+$('refresh-all').addEventListener('click', async () => {
+  const btn = $('refresh-all');
+  const status = $('refresh-all-status');
+  btn.disabled = true;
+  status.textContent = 'Đang bắt đầu…';
+  try {
+    const res = await api('accounts/refresh-all', 'POST', {});
+    if (res.error) { status.textContent = 'Lỗi: ' + res.error; btn.disabled = false; return; }
+    if (!res.started) {
+      status.textContent = 'Một đợt refresh khác đang chạy — chờ nó xong nhé.';
+      btn.disabled = false;
+      return;
+    }
+    status.textContent = 'Đang refresh token của tất cả account… (xem ✓/⚠/⛔ trên từng account)';
+    // Poll trạng thái: GET không khởi động đợt mới. Dừng khi running=false
+    // (đợt vừa xong) hoặc sau 10 phút tối đa.
+    const started = Date.now();
+    const timer = setInterval(async () => {
+      const st = await api('accounts/refresh-all'); // GET — chỉ đọc trạng thái
+      await loadAccounts();
+      if (!st.running || Date.now() - started > 10 * 60 * 1000) {
+        clearInterval(timer);
+        btn.disabled = false;
+        status.textContent = st.running ? 'Vẫn đang chạy — kiểm tra log container nếu cần.' : 'Hoàn tất — danh sách đã cập nhật.';
+        loadAccounts();
+      }
+    }, 4000);
+  } catch (err) {
+    status.textContent = 'Lỗi: ' + err;
+    btn.disabled = false;
+  }
 });

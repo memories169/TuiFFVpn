@@ -59,6 +59,12 @@ var (
 
 	errNoChallengePage      = errors.New("no Fastly challenge page served")
 	errChallengeNotAccepted = errors.New("challenge cookie not accepted")
+
+	// ErrFastlyChallenge marks every failure caused by the Fastly anti-bot
+	// edge (CAPTCHA served, challenge not accepted, solver out of rounds).
+	// It is TRANSIENT and network-level: the account's FxA grant is fine and
+	// the VPN keeps working — callers must not treat the account as dead.
+	ErrFastlyChallenge = errors.New("fastly anti-bot challenge")
 )
 
 type fastlyChallenge struct {
@@ -111,7 +117,9 @@ func solveFastlyChallenge(ctx context.Context) error {
 	if lastErr == nil {
 		lastErr = errNoChallengePage
 	}
-	return lastErr
+	// Wrap every solver failure in ErrFastlyChallenge so callers can tell a
+	// transient edge problem from a dead refresh token.
+	return fmt.Errorf("%w: %v", ErrFastlyChallenge, lastErr)
 }
 
 // solveOnHost runs the challenge flow against one host with a throwaway client

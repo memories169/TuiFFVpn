@@ -66,6 +66,8 @@ type App struct {
 	// suspectEdge is the server host currently rejecting tunnels
 	// server-side (2 consecutive fast fresh-session failures).
 	suspectEdge string
+	// refreshAll tracks the manual "refresh all tokens" pass (UI button).
+	refreshAll refreshAllState
 }
 
 // New builds an App.
@@ -176,12 +178,31 @@ func (a *App) refreshAccountToken(ctx context.Context, email, refreshToken strin
 	}()
 
 	tok, err := fxa.RefreshToken(ctx, refreshToken)
+	if err != nil && isTransientRefreshErr(err) {
+		// Transient (Fastly CAPTCHA / network): one spaced retry usually
+		// clears it — the challenge cookie TTL or the bot score changes.
+		// Bound the retry to 10 s so a keeper pass with many accounts does
+		// not stall on a hard-down network.
+		rctx, rcancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer rcancel()
+		tok, err = fxa.RefreshToken(rctx, refreshToken)
+	}
 	if err != nil {
 		a.mu.Lock()
 		if ac := a.Store.FindAccount(email); ac != nil && ac.RefreshToken == refreshToken {
-			// Record WHY this account's grant died (shown per account in the
-			// UI); other accounts are untouched and keep rotating.
-			ac.RefreshError = err.Error()
+			if errors.Is(err, fxa.ErrFastlyChallenge) || isTransientRefreshErr(err) {
+				// TRANSIENT (Fastly CAPTCHA, network hiccup, 5xx): the FxA
+				// grant is alive and the VPN keeps working. Record it as a
+				// warning on ProbeError — NOT as a dead RefreshError — and
+				// clear the dead marker in case an earlier run set it.
+				ac.RefreshError = ""
+				ac.ProbeError = "refresh: " + transientErrLabel(err)
+			} else {
+				// A real rejection (HTTP 400/401/403 = dead grant: password
+				// changed, signed out everywhere). Record WHY on the account;
+				// other accounts are untouched and keep rotating.
+				ac.RefreshError = err.Error()
+			}
 			_ = a.Store.Save()
 		}
 		a.mu.Unlock()
@@ -202,6 +223,50 @@ func (a *App) refreshAccountToken(ctx context.Context, email, refreshToken strin
 	fresh := tok.AccessToken
 	a.mu.Unlock()
 	return fresh, nil
+}
+
+// isTransientRefreshErr reports whether a refresh failure is temporary and
+// says nothing about the account's health: Fastly CAPTCHA/challenge, network
+// errors, timeouts, and server-side 5xx/429. Only a clean HTTP 400/401/403
+// from the FxA OAuth endpoint means the grant is really dead.
+func isTransientRefreshErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, fxa.ErrFastlyChallenge) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, context.Canceled) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "fastly"):
+		return true
+	case strings.Contains(msg, "challenge"):
+		return true
+	case strings.Contains(msg, "captcha"):
+		return true
+	case strings.Contains(msg, "timeout"), strings.Contains(msg, "deadline"):
+		return true
+	case strings.Contains(msg, "connection reset"), strings.Contains(msg, "connection refused"),
+		strings.Contains(msg, "broken pipe"), strings.Contains(msg, "eof"),
+		strings.Contains(msg, "dial tcp"), strings.Contains(msg, "no such host"),
+		strings.Contains(msg, "tls handshake"), strings.Contains(msg, "proxyconnect"):
+		return true
+	case strings.Contains(msg, "http 429"), strings.Contains(msg, "http 500"),
+		strings.Contains(msg, "http 502"), strings.Contains(msg, "http 503"),
+		strings.Contains(msg, "http 504"):
+		return true
+	}
+	return false
+}
+
+// transientErrLabel is the compact UI label for a transient refresh failure.
+func transientErrLabel(err error) string {
+	if errors.Is(err, fxa.ErrFastlyChallenge) {
+		return "Fastly đang chặn IP server bằng CAPTCHA (tạm thời — account vẫn hoạt động bình thường, sẽ tự retry)"
+	}
+	return err.Error()
 }
 
 // LoginResponse is the API reply for /api/login.
