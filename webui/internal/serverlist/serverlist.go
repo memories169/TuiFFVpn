@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"time"
 )
 
@@ -92,6 +93,18 @@ func Fetch(ctx context.Context) ([]Country, error) {
 		if c.Code != "" && len(c.Cities) > 0 {
 			countries = append(countries, c)
 		}
+	}
+	// Remote Settings returns the entries in arbitrary order; sort by
+	// country then city so every UI (web console, desktop app) shows the
+	// same alphabetical list instead of a shuffle that changes per fetch.
+	sort.Slice(countries, func(i, j int) bool {
+		return countries[i].Name < countries[j].Name
+	})
+	for i := range countries {
+		cities := countries[i].Cities
+		sort.Slice(cities, func(a, b int) bool {
+			return cities[a].Name < cities[b].Name
+		})
 	}
 	return countries, nil
 }
