@@ -39,31 +39,34 @@ Chạy **một** khối lệnh đúng distro của bạn. Đây là các gói `-
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y build-essential git make \
-  libxkbcommon-dev libwayland-dev libx11-dev libx11-xcb-dev \
+sudo apt-get install -y build-essential git make pkg-config \
+  libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+  libx11-dev libx11-xcb-dev libxcursor-dev libxfixes-dev \
   libgl-dev libegl-dev libvulkan-dev
 ```
 
 ### Fedora / RHEL / CentOS Stream / Rocky / Alma
 
 ```bash
-sudo dnf install -y golang git make gcc \
+sudo dnf install -y golang git make gcc pkgconf \
   libxkbcommon-devel wayland-devel libX11-devel libX11-xcb-devel \
+  libXcursor-devel libXfixes-devel \
   mesa-libGL-devel mesa-libEGL-devel mesa-libGLES-devel vulkan-loader-devel
 ```
 
 ### Arch / Manjaro / EndeavourOS / CachyOS
 
 ```bash
-sudo pacman -S --needed go git make gcc \
-  libxkbcommon wayland libglvnd mesa vulkan-icd-loader
+sudo pacman -S --needed go git make gcc pkgconf \
+  libxkbcommon libxkbcommon-x11 wayland libglvnd mesa vulkan-icd-loader \
+  libxcursor libxfixes
 ```
 
 ### openSUSE (Tumbleweed/Leap)
 
 ```bash
-sudo zypper install -y go git make gcc \
-  libxkbcommon-devel wayland-devel libX11-devel \
+sudo zypper install -y go git make gcc pkg-config \
+  libxkbcommon-devel wayland-devel libX11-devel libXcursor-devel libXfixes-devel \
   Mesa-libGL-devel Mesa-libEGL-devel vulkan-loader-devel
 ```
 
@@ -75,11 +78,11 @@ Thêm vào `environment.systemPackages` (hoặc `nix-shell` tạm):
 environment.systemPackages = with pkgs; [
   go git pkg-config
   libxkbcommon wayland libGL mesa vulkan-loader
-  xorg.libX11 xorg.libX11-xcb
+  xorg.libX11 xorg.libX11-xcb xorg.libXcursor xorg.libXfixes
 ];
 ```
 
-(`nix-shell -p go git pkg-config libxkbcommon wayland libGL mesa vulkan-loader xorg.libX11`)
+(`nix-shell -p go git pkg-config libxkbcommon wayland libGL mesa vulkan-loader xorg.libX11 xorg.libXcursor xorg.libXfixes`)
 
 ### Kiểm tra thư viện đã đủ
 
