@@ -1,17 +1,23 @@
 module fxsocks
 
-go 1.20
+go 1.21
 
 require (
+	gioui.org v0.8.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/refraction-networking/utls v1.3.2
 	golang.org/x/crypto v0.31.0
 )
 
 require (
+	gioui.org/shader v1.0.8 // indirect
 	github.com/andybalholm/brotli v1.0.4 // indirect
 	github.com/gaukas/godicttls v0.0.3 // indirect
+	github.com/go-text/typesetting v0.2.1 // indirect
 	github.com/klauspost/compress v1.15.15 // indirect
+	golang.org/x/exp v0.0.0-20240707233637-46b078467d37 // indirect
+	golang.org/x/exp/shiny v0.0.0-20240707233637-46b078467d37 // indirect
+	golang.org/x/image v0.18.0 // indirect
 	golang.org/x/sys v0.28.0 // indirect
 )
 

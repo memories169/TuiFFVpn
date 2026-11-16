@@ -2,6 +2,8 @@
 
 # 🦊 Firefox VPN Web Console
 
+**Repo:** [github.com/memories169/TuiFFVpn](https://github.com/memories169/TuiFFVpn)
+
 A **web UI** to log in with a Firefox account and pick a VPN server/location,
 backed by a real Go engine that runs a local SOCKS5 proxy over the selected
 Firefox VPN server. It is based on the architecture of the
@@ -31,6 +33,34 @@ browser ──► :9090 (Web console)
   pass. No `/dev/net/tun`, no root, no privileged container.
 - **Persists** your OAuth tokens and the selected server to a state file
   (`0600`, atomic write), so a restart reuses them.
+
+## Native Linux desktop app (Catppuccin Macchiato)
+
+fxvpn-desktop là **app native Linux** (Gio UI, không Electron/webview) chạy
+**cùng một engine Go** với web console — token keeper, rotator, MASQUE dialer,
+SOCKS5 — nhưng in-process, **không cần Docker và không có màn hình đăng nhập
+admin**:
+
+- Tab **Trạng thái** — trạng thái tunnel, kết nối lại/ngắt, test nhanh
+- Tab **Account** — thêm account (đăng nhập + 2FA hoặc dán token), danh sách
+  không giới hạn, **🔄 refresh token tất cả**, đổi account đang dùng, xoá
+- Tab **Vị trí** — danh sách country → city → server, bấm để kết nối
+- Tab **Test** — exit-IP/latency/edge diagnostics qua tunnel
+- Theme **Catppuccin Macchiato** toàn bộ widget; footer hiển thị thông báo
+  tiếng Việt (⚠ Fastly tạm thời ≠ ⛔ token chết, đúng như web console)
+
+```bash
+make                 # cần libxkbcommon/wayland/x11/gl dev headers
+make cpu             # không có Vulkan/GPU
+```
+
+Chi tiết cài đặt theo distro: [docs/desktop-linux.md](docs/desktop-linux.md)
+· Docker: [docs/install-docker.md](docs/install-docker.md)
+· Windows (WSL2): [docs/install-windows.md](docs/install-windows.md)
+· macOS: [docs/install-macos.md](docs/install-macos.md)
+
+State file mặc định `~/.local/state/fxvpn/state.json` — cùng schema với
+container, trỏ `--state` vào file của container để dùng lại account có sẵn.
 
 ## Admin security & tabs
 
@@ -470,6 +500,19 @@ client lives in the bot's own repository, not here.
 
 ## Layout
 
+```
+webui/
+├── cmd/
+│   ├── fxvpn-webui/        # container web console entry point
+│   └── fxvpn-token/        # token capture helper
+├── internal/               # engine internals (fxa, guardian, proxy, state, webapp)
+├── bridge/                 # supported embedding API (used by the desktop app)
+└── desktop/                # native Linux GUI (Gio, Catppuccin Macchiato)
+    └── cmd/fxvpn-desktop/
+docs/                       # per-platform install guides
+Makefile                    # make / make cpu / make headless (compile-check)
+```
+
 | Path | Responsibility |
 |---|---|
 | `webui/cmd/fxvpn-webui` | entrypoint / HTTP server |
@@ -481,6 +524,8 @@ client lives in the bot's own repository, not here.
 | `webui/internal/serverlist` | Remote-Settings server tree |
 | `webui/internal/proxy` | SOCKS5 listener + HTTP/2 CONNECT upstream |
 | `webui/internal/state` | atomic JSON persistence |
+| `webui/bridge` | embedding API over the engine (desktop app entry) |
+| `webui/desktop` | native Linux GUI (Gio widgets, Macchiato theme) |
 
 ## Honesty & authorized use
 
