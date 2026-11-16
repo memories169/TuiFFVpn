@@ -157,6 +157,14 @@ func hawkHeader(method, rawURL, id string, key []byte, payload string) (string, 
 }
 
 func postJSON(ctx context.Context, url string, body map[string]any) ([]byte, int, error) {
+	return postJSONUA(ctx, url, body, UA)
+}
+
+// postJSONUA is postJSON with an explicit User-Agent. The Fastly edge in
+// front of the FxA endpoints 406s the MozillaVPN client UA but passes any
+// Firefox browser UA (verified live — see DefaultBrowserUA), so callers
+// hitting the edge repeatedly (token refresh) use the browser UA.
+func postJSONUA(ctx context.Context, url string, body map[string]any, ua string) ([]byte, int, error) {
 	bj, _ := json.Marshal(body)
 	return fxaRetry(ctx, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(bj)))
@@ -164,7 +172,7 @@ func postJSON(ctx context.Context, url string, body map[string]any) ([]byte, int
 			return nil, err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("User-Agent", UA)
+		req.Header.Set("User-Agent", ua)
 		req.Header.Set("Accept", "application/json")
 		return req, nil
 	})

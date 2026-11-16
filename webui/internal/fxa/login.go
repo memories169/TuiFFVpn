@@ -124,7 +124,11 @@ func RefreshToken(ctx context.Context, refreshToken string) (*TokenResponse, err
 		// fxa-credentials grant's tokens and the rotator keeps churning.
 		"ttl": 21600,
 	}
-	data, status, err := postJSON(ctx, AuthServer+"/oauth/token", body)
+	// Use the Firefox browser UA, not the MozillaVPN client UA: the Fastly
+	// edge 406s the client UA on /oauth/token but passes a browser UA
+	// outright (verified live, see DefaultBrowserUA). This avoids dragging
+	// every keeper/rotator refresh through the challenge solver.
+	data, status, err := postJSONUA(ctx, AuthServer+"/oauth/token", body, DefaultBrowserUA)
 	if err != nil {
 		return nil, err
 	}
