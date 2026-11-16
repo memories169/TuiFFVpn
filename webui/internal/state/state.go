@@ -21,6 +21,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -37,6 +38,10 @@ type Tokens struct {
 // Account is one managed Firefox account with its own OAuth tokens, so the
 // proxy can be switched between accounts without re-login. Quota lives here
 // too, right next to the credentials it belongs to.
+//
+// There is NO cap on how many accounts a Store may hold — add as many as you
+// like; every per-account subsystem (rotation, keeper, quota probe) is
+// account-count aware and scales with the list.
 type Account struct {
 	Email        string    `json:"email"`
 	AccessToken  string    `json:"access_token"`
@@ -50,6 +55,15 @@ type Account struct {
 	// ProbeError is the last quota-probe failure reason (empty = OK). It lets
 	// the UI show WHY quota is missing instead of a bare "?".
 	ProbeError string `json:"probe_error,omitempty"`
+	// RefreshedAt is when the token keeper last successfully refreshed this
+	// account (zero = never). Lets the keeper stagger accounts instead of
+	// hammering all of them in one burst.
+	RefreshedAt time.Time `json:"refreshed_at,omitempty"`
+	// RefreshError is the last token-refresh failure reason (empty = OK). A
+	// non-empty value means the FxA grant is dead (password change, sign-out
+	// everywhere) and the account needs re-adding — but it never blocks the
+	// other accounts from rotating or refreshing.
+	RefreshError string `json:"refresh_error,omitempty"`
 }
 
 // AccessTokenValid reports whether the account's access token is usable.
@@ -73,7 +87,9 @@ type Selected struct {
 	ServerPort  int    `json:"server_port"`
 }
 
-// Store is a persistent state file.
+// Store is a persistent state file. Accounts has no length cap — the state
+// file is rewritten atomically on every change, so hundreds of accounts cost
+// nothing but JSON size.
 type Store struct {
 	Path     string    `json:"-"`
 	Admin    Admin     `json:"admin"`
@@ -274,4 +290,70 @@ func (s *Store) Select(countryCode, countryName, cityCode, cityName, host string
 		ServerHost:  host,
 		ServerPort:  port,
 	}
+}
+
+// HealthyAccounts returns every OTHER usable account (token + refresh token
+// present, no dead grant), best quota first. There is no cap on the returned
+// count — the rotator works through as many fallbacks as the user has added.
+func (s *Store) HealthyAccounts(exclude string) []Account {
+	candidates := make([]Account, 0, len(s.Accounts))
+	for i := range s.Accounts {
+		ac := &s.Accounts[i]
+		if ac.Email == exclude || ac.AccessToken == "" || ac.RefreshToken == "" || ac.RefreshError != "" {
+			continue
+		}
+		candidates = append(candidates, *ac)
+	}
+	// Most remaining quota first; ties break on the earliest added so the
+	// order stays stable across evaluations.
+	for i := 1; i < len(candidates); i++ {
+		for j := i; j > 0; j-- {
+			ji, jj := candidates[j], candidates[j-1]
+			if parseQuota(ji.QuotaLeft) > parseQuota(jj.QuotaLeft) ||
+				(parseQuota(ji.QuotaLeft) == parseQuota(jj.QuotaLeft) && ji.AddedAt.Before(jj.AddedAt)) {
+				candidates[j], candidates[j-1] = candidates[j-1], candidates[j]
+			} else {
+				break
+			}
+		}
+	}
+	return candidates
+}
+
+// parseQuota is a state-local byte parser (no import cycle with webapp).
+func parseQuota(s string) float64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	if n, err := strconv.ParseFloat(s, 64); err == nil {
+		return n
+	}
+	i := 0
+	for i < len(s) && (s[i] >= '0' && s[i] <= '9' || s[i] == '.') {
+		i++
+	}
+	if i == 0 || i == len(s) {
+		return 0
+	}
+	n, err := strconv.ParseFloat(s[:i], 64)
+	if err != nil {
+		return 0
+	}
+	var mult float64
+	switch strings.ToUpper(strings.TrimSuffix(strings.TrimSpace(s[i:]), "S")) {
+	case "B":
+		mult = 1
+	case "KB", "KIB":
+		mult = 1024
+	case "MB", "MIB":
+		mult = 1024 * 1024
+	case "GB", "GIB":
+		mult = 1024 * 1024 * 1024
+	case "TB", "TIB":
+		mult = 1024 * 1024 * 1024 * 1024
+	default:
+		return 0
+	}
+	return n * mult
 }

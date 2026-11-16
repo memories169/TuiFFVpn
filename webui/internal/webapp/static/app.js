@@ -97,6 +97,10 @@ async function loadAccounts() {
   const list = $('account-list');
   list.innerHTML = '';
   const accts = res.accounts || [];
+  // Số lượng account không bị giới hạn — hiển thị tổng số để theo dõi khi
+  // danh sách dài.
+  const counter = $('account-count');
+  if (counter) counter.textContent = accts.length ? `${accts.length} account` : '';
   if (accts.length === 0) { list.innerHTML = '<li class="muted">Chưa có account nào — thêm qua form đăng nhập phía trên.</li>'; return; }
   accts.forEach((a) => {
     const li = document.createElement('li');
@@ -107,7 +111,9 @@ async function loadAccounts() {
     span.innerHTML = `<b>${a.email}</b>${active ? ' <span class="active-badge">● đang dùng</span>' : ''}` +
       ` — Quota: ${quota} / ${a.quota_max || '?'}` +
       (a.has_token ? '' : ' <span class="muted">(chưa có token — bấm "Dùng account này" trên account khác, hoặc thêm lại account này)</span>') +
-      (a.probe_error ? ` <span class="muted" title="${a.probe_error.replace(/"/g, '&quot;')}">⚠ probe: ${a.probe_error.length > 90 ? a.probe_error.slice(0, 90) + '…' : a.probe_error}</span>` : '');
+      (a.refresh_error ? ` <span class="muted" title="${a.refresh_error.replace(/"/g, '&quot;')}">⛔ token: ${a.refresh_error.length > 90 ? a.refresh_error.slice(0, 90) + '…' : a.refresh_error}</span>` : '') +
+      (a.probe_error ? ` <span class="muted" title="${a.probe_error.replace(/"/g, '&quot;')}">⚠ probe: ${a.probe_error.length > 90 ? a.probe_error.slice(0, 90) + '…' : a.probe_error}</span>` : '') +
+      (a.refreshed_at ? ` <span class="muted" title="Lần refresh token gần nhất bởi token keeper">✓ refresh ${new Date(a.refreshed_at).toLocaleString()}</span>` : '');
     if (active) li.classList.add('account-active');
     const use = document.createElement('button');
     use.type = 'button';

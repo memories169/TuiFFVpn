@@ -40,11 +40,12 @@ The web console requires an **admin login** first. Bootstrap credentials are
 After logging in you get three tabs:
 
 - **Quản lý account** — add as many Firefox accounts as you like (email+password,
-  browser capture, manual tokens, or the PC userscript). Each account keeps its
-  own OAuth tokens and quota. Click **“Dùng account này”** on any account to
-  make it the one the proxy uses — if a server is already selected, the proxy
-  restarts on the new account immediately. The account marked **● đang dùng**
-  is active.
+  browser capture, manual tokens, or the PC userscript) — **no cap on the
+  account count**: the state file, rotator, token keeper, and quota probes all
+  scale with the list. Each account keeps its own OAuth tokens and quota.
+  Click **“Dùng account này”** on any account to make it the one the proxy
+  uses — if a server is already selected, the proxy restarts on the new
+  account immediately. The account marked **● đang dùng** is active.
 - **Chọn location** — pick a country → city → server; selecting one starts the
   SOCKS5 proxy against it **for the active account**. Switching accounts later
   keeps the same server and just re-opens the tunnel with the other account's
@@ -109,19 +110,29 @@ days while the last-used account stays fine. A background **token
 keeper** runs every 24 hours and refreshes **every** account's access
 token (skipping the active one — the rotator owns it), plus one
 healing pass 20 seconds after boot for accounts that went stale while
-the container was down. Failures are logged per account
-(`keeper: <email> refresh failed` — that account needs re-adding; its
-FxA session was destroyed server-side, e.g. sign-out or password
-change, and no client can revive it).
+the container was down.
+
+The keeper refreshes accounts **concurrently** (`FXVPN_KEEPER_WORKERS`,
+default 4): the whole list heals in one pass no matter how many accounts
+you store, so account #100 no longer waits behind #1–#99 while its token
+decays. Each account's refresh is gated per account — a slow or dead
+account never blocks the others. Failures are logged per account
+(`keeper: <email> refresh failed`) and surfaced in the UI on that account
+only (⛔ token: …) — that account's FxA session was destroyed server-side
+(e.g. sign-out or password change) and needs re-adding; every other
+account keeps rotating normally.
 
 ### Automatic rotation
 
-A background rotator runs every 30 minutes and:
+A background rotator runs every 30 minutes (`FXVPN_ROTATE_INTERVAL`) and:
 1. **Refreshes** the active account's access token when it is within 30
-   minutes of expiring (Firefox VPN tokens live ≤ 6h).
-2. **Rotates** to the other account with the most remaining quota when the
-   refresh fails (token revoked) or when the active account's quota drops
-   below 512 MB — the proxy restarts on the new account with no manual step.
+   minutes of expiring (`FXVPN_REFRESH_BEFORE`; Firefox VPN tokens live
+   ≤ 6h).
+2. **Rotates** when the refresh fails (token revoked) or when the active
+   account's quota drops below 512 MB — it walks the healthy accounts
+   (most remaining quota first) until one yields a working proxy pass,
+   with no manual step and no cap on the fallback depth: every usable
+   account is a candidate, in order.
 
 Additionally, the proxy pass itself is refreshed **in-band**: Guardian proxy
 passes are short-lived (about an hour), and when the MASQUE edge answers
@@ -132,14 +143,16 @@ proxy keeps running without user intervention and the
 
 Access-token refreshes are equally automatic: every refresh path (rotator,
 proxy-pass healing, ingest probe, account switch) funnels through a
-single-flight gate. Firefox Accounts refresh tokens are **one-time-use
-(rotating)** — each successful refresh revokes the presented token and
-issues a new one — so concurrent refreshes using the same token would race
-and the loser would store a now-revoked refresh token. The gate serializes
-them: the first caller refreshes and stores the new pair; concurrent
-callers re-read the rotated tokens. Refresh tokens only die permanently when
-the account changes password, signs out everywhere, or the session lapses —
-those require re-adding the account.
+per-account single-flight gate. Firefox Accounts refresh tokens are
+**one-time-use (rotating)** — each successful refresh revokes the presented
+token and issues a new one — so concurrent refreshes using the same token
+would race and the loser would store a now-revoked refresh token. The gate
+serializes refreshes **of the same account** while letting different
+accounts refresh in parallel (the old global lock made account #50 wait for
+#1's exchange — with many accounts the queued tokens decayed and died).
+Refresh tokens only die permanently when the account changes password,
+signs out everywhere, or the session lapses — those require re-adding the
+account, and the failure reason shows on that account in the UI.
 
 ### Stable exit IP
 
@@ -395,6 +408,10 @@ The CLI `fxvpn-token` is also in the image (`docker compose exec fxvpn-webui
 | `-socks` | `SOCKS_ADDR` | `127.0.0.1:1080` | SOCKS5 proxy listen address |
 | `-state` | `STATE_FILE` | `/data/state.json` | Persisted tokens + selection |
 | `-guardian` | `GUARDIAN_ENDPOINT` | `https://vpn.mozilla.org` | Guardian API endpoint |
+| | `FXVPN_ROTATE_INTERVAL` | `30m` | How often the rotator evaluates the active account |
+| | `FXVPN_REFRESH_BEFORE` | `30m` | Refresh the active token when it expires within this window |
+| | `FXVPN_KEEPER_INTERVAL` | `24h` | How often every account's refresh token is exercised |
+| | `FXVPN_KEEPER_WORKERS` | `4` | Concurrent keeper refreshes (scales with your account count) |
 
 ### Edge control API (for sing-box / telegram & discord bots)
 

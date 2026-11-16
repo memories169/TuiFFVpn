@@ -48,10 +48,18 @@ type App struct {
 	// currentPass is the live proxy pass JWT of the running proxy. The
 	// dialer's bearerProvider reads it after refreshing through Guardian.
 	currentPass string
-	// refreshMu single-flights FxA refresh-token exchanges (rotating tokens
-	// race when refreshed concurrently — the loser would overwrite the
-	// stored refresh token with a revoked one).
+	// refreshMu gates ONE account's refresh-token exchange at a time (FxA
+	// refresh tokens are rotating: two concurrent refreshes with the same
+	// token race and the loser would overwrite the stored refresh token with
+	// a revoked one). It is keyed PER ACCOUNT — refreshes of DIFFERENT
+	// accounts run fully in parallel, so the keeper heals 50 accounts in the
+	// time a global lock would heal 2 and no account's refresh ever waits
+	// behind another account's (the old global-lock behavior that let queued
+	// tokens decay while waiting).
 	refreshMu sync.Mutex
+	// refreshing is the per-account single-flight key: the refresh token
+	// currently being exchanged (locked under refreshMu).
+	refreshing string
 	// edgeDialer is the live MASQUE dialer; its Generation() reports how
 	// many distinct edge sessions have been built (stability diagnostics).
 	edgeDialer *proxy.MasqueDialer
@@ -111,32 +119,72 @@ func (a *App) validAccessToken(ctx context.Context) (string, error) {
 	return tok, nil
 }
 
-// refreshAccountToken single-flights an FxA refresh for the given account.
+// refreshAccountToken single-flights an FxA refresh FOR ONE ACCOUNT.
 // FxA refresh tokens are ONE-TIME-USE (rotating): the presented token is
-// revoked on success and a new one is returned. Concurrent refreshes with
-// the same token race — the loser's write would store a revoked token.
-// Under the refreshMu gate:
-//   - a winner performs the exchange and stores the new pair on the account;
-//   - a loser that arrives while another refresh is in flight waits, then
-//     re-reads the account: if its refresh token changed, the winner already
-//     handled it and the fresh access token is returned.
+// revoked on success and a new one is returned. The gate is keyed on the
+// account's current refresh token, so concurrent refreshes of the SAME
+// account collapse into one exchange (a loser re-reads the rotated pair),
+// while refreshes of DIFFERENT accounts never queue behind each other —
+// with an account list of any size every token is healed promptly and none
+// decays while waiting for another account's refresh.
 func (a *App) refreshAccountToken(ctx context.Context, email, refreshToken string) (string, error) {
-	a.refreshMu.Lock()
-	defer a.refreshMu.Unlock()
+	key := email + "|" + refreshToken
 
-	// Re-read under the gate: another goroutine may have just rotated this
-	// account's tokens while we were waiting to acquire the mutex.
+	// Serialize against any in-flight exchange of THIS account.
+	a.refreshMu.Lock()
 	a.mu.Lock()
 	if ac := a.Store.FindAccount(email); ac != nil && ac.RefreshToken != refreshToken {
-		// Tokens already rotated for us.
+		// A concurrent exchange already rotated our account for us.
 		tok := ac.AccessToken
 		a.mu.Unlock()
+		a.refreshMu.Unlock()
 		return tok, nil
 	}
 	a.mu.Unlock()
+	if a.refreshing == "" {
+		// Gate free and our account still holds the presented refresh token
+		// — this goroutine performs the exchange.
+		a.refreshing = key
+		a.refreshMu.Unlock()
+	} else {
+		// An exchange for a DIFFERENT account is in flight. Ours must not
+		// block it (per-account gating), so poll until the gate frees and
+		// then claim it — the wait is one exchange long, not a queue.
+		a.refreshMu.Unlock()
+		for {
+			a.refreshMu.Lock()
+			if a.refreshing == "" {
+				a.refreshing = key
+				a.refreshMu.Unlock()
+				break
+			}
+			a.refreshMu.Unlock()
+			time.Sleep(20 * time.Millisecond) // an FxA exchange takes seconds
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+		}
+	}
+
+	defer func() {
+		// Release the gate no matter which way the exchange went (also on a
+		// panic inside the exchange — a stuck flag would deadlock all
+		// refreshes forever).
+		a.refreshMu.Lock()
+		a.refreshing = ""
+		a.refreshMu.Unlock()
+	}()
 
 	tok, err := fxa.RefreshToken(ctx, refreshToken)
 	if err != nil {
+		a.mu.Lock()
+		if ac := a.Store.FindAccount(email); ac != nil && ac.RefreshToken == refreshToken {
+			// Record WHY this account's grant died (shown per account in the
+			// UI); other accounts are untouched and keep rotating.
+			ac.RefreshError = err.Error()
+			_ = a.Store.Save()
+		}
+		a.mu.Unlock()
 		return "", err
 	}
 	a.mu.Lock()
@@ -147,6 +195,8 @@ func (a *App) refreshAccountToken(ctx context.Context, email, refreshToken strin
 		}
 		ac.ObtainedAt = time.Now()
 		ac.ExpiresIn = tok.ExpiresIn
+		ac.RefreshedAt = time.Now()
+		ac.RefreshError = ""
 		_ = a.Store.Save()
 	}
 	fresh := tok.AccessToken

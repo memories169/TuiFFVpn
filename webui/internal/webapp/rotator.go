@@ -18,15 +18,18 @@ import (
 	"context"
 	"errors"
 	"log"
+	"os"
+	"strconv"
+	"sync"
 	"time"
 
 	"fxsocks/webui/internal/guardian"
 	"fxsocks/webui/internal/state"
 )
 
-// rotateTicker drives the automatic account rotation: when the active
+// rotateSettings drives the automatic account rotation: when the active
 // account's access token is close to expiring (or its quota is nearly burnt),
-// switch to the healthiest other account and restart the proxy on it. Firefox
+// switch to the healthiest other account and keep the proxy on it. Firefox
 // VPN access tokens live at most 6h, so the default interval keeps a fresh
 // token always in front.
 type rotateSettings struct {
@@ -35,17 +38,53 @@ type rotateSettings struct {
 	MinQuotaBytes float64       // switch when remaining quota is under this (bytes); 0 = disabled
 }
 
-var defaultRotateSettings = rotateSettings{
-	Interval:      30 * time.Minute,
-	RefreshBefore: 30 * time.Minute,
+// envDuration reads an env var as a Go duration; returns def when unset or
+// unparsable. Lets the operator tune the rotator for any account count
+// without recompiling.
+func envDuration(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+		log.Printf("rotator: ignoring unparsable %s=%q (want e.g. 30m, 1h)", key, v)
+	}
+	return def
 }
+
+// envInt reads an env var as a positive integer; def when unset/unparsable.
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+		log.Printf("rotator: ignoring unparsable %s=%q (want a positive integer)", key, v)
+	}
+	return def
+}
+
+// defaultRotateSettings picks up FXVPN_ROTATE_INTERVAL / FXVPN_REFRESH_BEFORE
+// from the environment (docker-compose overrides) with the proven defaults.
+var defaultRotateSettings = func() rotateSettings {
+	return rotateSettings{
+		Interval:      envDuration("FXVPN_ROTATE_INTERVAL", 30*time.Minute),
+		RefreshBefore: envDuration("FXVPN_REFRESH_BEFORE", 30*time.Minute),
+		MinQuotaBytes: 0, // quota-driven switching is handled in rotateOnce
+	}
+}()
 
 // tokenKeeperInterval — how often EVERY account's refresh token is
 // exercised. FxA refresh tokens decay when their grant/session goes
 // unused (the user's complaint: after hours/days only the last-used
 // account stayed valid). Refreshing each account daily keeps every
-// grant active simultaneously.
-const tokenKeeperInterval = 24 * time.Hour
+// grant active simultaneously. Override with FXVPN_KEEPER_INTERVAL.
+var tokenKeeperInterval = envDuration("FXVPN_KEEPER_INTERVAL", 24*time.Hour)
+
+// keeperWorkers is the keeper's concurrency: how many accounts refresh at
+// the same time. The old sequential keeper walked the list one account at a
+// time (up to 45 s each), so a large account list took longer than the
+// decay window and late accounts died. With workers the whole list heals in
+// one pass regardless of size. Override with FXVPN_KEEPER_WORKERS.
+var keeperWorkers = envInt("FXVPN_KEEPER_WORKERS", 4)
 
 // startRotator launches the background rotation loop.
 func (a *App) startRotator() {
@@ -74,32 +113,48 @@ func (a *App) startRotator() {
 	}()
 }
 
-// keeperOnce refreshes every account's access token (skip the active
-// one — the rotator owns it and it is already fresh). Keeps all grants
-// alive so non-active accounts never go "token invalid" from inactivity.
+// keeperOnce refreshes EVERY inactive account's access token with a bounded
+// worker pool (FXVPN_KEEPER_WORKERS concurrent refreshes). The active
+// account is skipped — the rotator owns it and it is already fresh. Keeps
+// all grants alive so non-active accounts never go "token invalid" from
+// inactivity, no matter how many accounts are managed.
 func (a *App) keeperOnce() {
 	a.mu.Lock()
 	accts := append([]state.Account(nil), a.Store.Accounts...)
 	active := a.Store.Active
 	a.mu.Unlock()
 
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, keeperWorkers)
+	var mu sync.Mutex // guards refreshed/failed counters
 	refreshed, failed := 0, 0
+
 	for _, ac := range accts {
 		if ac.Email == active || ac.RefreshToken == "" {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-		_, err := a.refreshAccountToken(ctx, ac.Email, ac.RefreshToken)
-		cancel()
-		if err != nil {
-			failed++
-			log.Printf("keeper: %s refresh failed: %v (account may need re-add)", ac.Email, err)
-		} else {
-			refreshed++
-		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(email, refresh string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			_, err := a.refreshAccountToken(ctx, email, refresh)
+			cancel()
+			mu.Lock()
+			if err != nil {
+				failed++
+				log.Printf("keeper: %s refresh failed: %v (account may need re-add)", email, err)
+			} else {
+				refreshed++
+			}
+			mu.Unlock()
+		}(ac.Email, ac.RefreshToken)
 	}
+	wg.Wait()
 	if refreshed+failed > 0 {
-		log.Printf("keeper: exercised %d/%d inactive accounts (failed %d)", refreshed, refreshed+failed, failed)
+		log.Printf("keeper: exercised %d/%d inactive accounts (%d workers, failed %d)",
+			refreshed, refreshed+failed, keeperWorkers, failed)
 	}
 }
 
@@ -163,15 +218,37 @@ func (a *App) rotateOnce() {
 	}
 	cancel()
 
-	// Refresh failed (token revoked?). Rotate to the healthiest alternative.
-	alt := a.pickAlternate(email)
-	if alt == nil {
-		log.Printf("rotator: no alternative account to rotate to")
+	// Refresh failed (token revoked?) — rotate through the healthy
+	// alternatives, best quota first, until one yields a working proxy pass.
+	alts := a.pickAlternates(email)
+	if len(alts) == 0 {
+		log.Printf("rotator: no healthy alternative account to rotate to (%d accounts on file, all dead or tokenless)", a.accountsOnFile())
 		return
 	}
-	log.Printf("rotator: switching active account %s -> %s", email, alt.Email)
+	for i, alt := range alts {
+		log.Printf("rotator: switching active account %s -> %s (fallback %d/%d)", email, alt.Email, i+1, len(alts))
+		if a.activateAccount(alt.Email) {
+			return
+		}
+		log.Printf("rotator: fallback %s did not produce a working pass — trying next", alt.Email)
+	}
+	log.Printf("rotator: every alternative account failed this pass; keeping %s active", email)
+}
+
+// accountsOnFile returns how many accounts are stored (for log lines).
+func (a *App) accountsOnFile() int {
 	a.mu.Lock()
-	a.Store.SetActive(alt.Email)
+	defer a.mu.Unlock()
+	return len(a.Store.Accounts)
+}
+
+// activateAccount makes email the active account and swaps the running
+// proxy onto it (pass-swap on the live session pool when possible, full
+// restart otherwise). True when the proxy ended up serving with this
+// account's pass.
+func (a *App) activateAccount(email string) bool {
+	a.mu.Lock()
+	a.Store.SetActive(email)
 	sel := a.Store.Selected
 	a.mu.Unlock()
 	a.saveState()
@@ -186,45 +263,49 @@ func (a *App) rotateOnce() {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		pass, err := a.refreshProxyPass(ctx)
 		cancel()
-		if err != nil {
-			log.Printf("rotator: pass swap for %s failed: %v — falling back to proxy restart", alt.Email, err)
-			if err := a.restartProxyOnActive(context.Background(), sel.ServerHost, sel.ServerPort); err != nil {
-				log.Printf("rotator: proxy restart on %s failed: %v", alt.Email, err)
-			}
-			return
-		}
-		a.mu.Lock()
-		a.currentPass = pass.RawToken
-		a.mu.Unlock()
-		a.edgeDialer.UpdatePass(pass.RawToken)
-		a.edgeDialer.SetRenewProvider(func() (string, error) {
-			pctx, pcancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer pcancel()
-			p, perr := a.refreshProxyPass(pctx)
-			if perr != nil {
-				return "", perr
-			}
+		if err == nil {
 			a.mu.Lock()
-			a.currentPass = p.RawToken
+			a.currentPass = pass.RawToken
 			a.mu.Unlock()
-			a.edgeDialer.UpdatePass(p.RawToken)
-			return p.RawToken, nil
-		}, pass.ExpiresAt())
-		log.Printf("rotator: pass swapped to %s on the live session pool (sessions retained)", alt.Email)
-		return
+			a.edgeDialer.UpdatePass(pass.RawToken)
+			a.edgeDialer.SetRenewProvider(func() (string, error) {
+				pctx, pcancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer pcancel()
+				p, perr := a.refreshProxyPass(pctx)
+				if perr != nil {
+					return "", perr
+				}
+				a.mu.Lock()
+				a.currentPass = p.RawToken
+				a.mu.Unlock()
+				a.edgeDialer.UpdatePass(p.RawToken)
+				return p.RawToken, nil
+			}, pass.ExpiresAt())
+			log.Printf("rotator: pass swapped to %s on the live session pool (sessions retained)", email)
+			return true
+		}
+		log.Printf("rotator: pass swap for %s failed: %v — falling back to proxy restart", email, err)
+		if rerr := a.restartProxyOnActive(context.Background(), sel.ServerHost, sel.ServerPort); rerr == nil {
+			log.Printf("rotator: proxy now running on %s", email)
+			return true
+		} else {
+			log.Printf("rotator: proxy restart on %s failed: %v", email, rerr)
+		}
+		return false
 	}
 
 	if sel.ServerHost != "" && sel.ServerPort != 0 {
 		if err := a.restartProxyOnActive(context.Background(), sel.ServerHost, sel.ServerPort); err != nil {
-			log.Printf("rotator: proxy restart on %s failed: %v", alt.Email, err)
-		} else {
-			log.Printf("rotator: proxy now running on %s", alt.Email)
+			log.Printf("rotator: proxy restart on %s failed: %v", email, err)
+			return false
 		}
+		log.Printf("rotator: proxy now running on %s", email)
 	}
+	return true
 }
 
 // refreshAccount refreshes the named account's access token; true on success.
-// Goes through singleFlightRefresh (webapp.go) so concurrent rotations never
+// Goes through refreshAccountToken (webapp.go) so concurrent rotations never
 // race the rotating one-time-use FxA refresh token.
 func (a *App) refreshAccount(ctx context.Context, email string) bool {
 	a.mu.Lock()
@@ -245,31 +326,20 @@ func (a *App) refreshAccount(ctx context.Context, email string) bool {
 	return tok != ""
 }
 
-// pickAlternate picks the other account with the most remaining quota.
-func (a *App) pickAlternate(exclude string) *AccountView {
+// pickAlternates lists the OTHER healthy accounts, most remaining quota
+// first. Every usable account is returned — the rotator walks the whole list
+// instead of giving up after a single candidate, so any number of accounts
+// can back the proxy. A stale RefreshError is retried on later passes: the
+// account list is only written to state (and shown dead in the UI) when a
+// refresh actually fails.
+func (a *App) pickAlternates(exclude string) []state.Account {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	var best *AccountView
-	for i := range a.Store.Accounts {
-		ac := &a.Store.Accounts[i]
-		if ac.Email == exclude || ac.AccessToken == "" || ac.RefreshToken == "" {
-			continue
-		}
-		if best == nil || parseQuotaBytesSafe(ac.QuotaLeft) > parseQuotaBytesSafe(best.QuotaLeft) {
-			best = &AccountView{Email: ac.Email, QuotaLeft: ac.QuotaLeft}
-		}
-	}
-	return best
-}
-
-// AccountView is a rotation-oriented account snapshot.
-type AccountView struct {
-	Email     string
-	QuotaLeft string
+	return a.Store.HealthyAccounts(exclude)
 }
 
 // restartProxyOnActive fetches a fresh proxy pass for the active account and
-// restarts the SOCKS5 proxy against the given server.
+// restarts the SOCKS proxy against the given server.
 // refreshProxyPass fetches a fresh Guardian proxy pass for the active
 // account using the full healing chain (valid access token → refresh on
 // invalid → activate on invalid). It does NOT touch the running proxy or

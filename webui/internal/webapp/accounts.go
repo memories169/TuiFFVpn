@@ -25,6 +25,8 @@ import (
 )
 
 // handleAccounts returns the list of managed Firefox accounts with quota state.
+// There is no cap on the list length — every stored account is returned and
+// the UI renders all of them.
 func (a *App) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	// Normalize first: merges quota-only stubs into their token twins and
@@ -40,20 +42,27 @@ func (a *App) handleAccounts(w http.ResponseWriter, r *http.Request) {
 		Active     bool   `json:"active"`
 		HasToken   bool   `json:"has_token"`
 		ProbeError string `json:"probe_error,omitempty"`
+		// RefreshError is the last token-refresh failure (dead FxA grant —
+		// the account needs re-adding; everything else keeps working).
+		RefreshError string `json:"refresh_error,omitempty"`
+		// RefreshedAt is when the keeper last refreshed this account.
+		RefreshedAt time.Time `json:"refreshed_at,omitempty"`
 	}
 	out := make([]item, 0, len(accts))
 	for i := range accts {
 		ac := &accts[i]
 		out = append(out, item{
-			Email:      ac.Email,
-			QuotaMax:   ac.QuotaMax,
-			QuotaLeft:  ac.QuotaLeft,
-			Active:     ac.Email == a.Store.Active,
-			HasToken:   ac.AccessToken != "",
-			ProbeError: ac.ProbeError,
+			Email:        ac.Email,
+			QuotaMax:     ac.QuotaMax,
+			QuotaLeft:    ac.QuotaLeft,
+			Active:       ac.Email == a.Store.Active,
+			HasToken:     ac.AccessToken != "",
+			ProbeError:   ac.ProbeError,
+			RefreshError: ac.RefreshError,
+			RefreshedAt:  ac.RefreshedAt,
 		})
 	}
-	writeJSON(w, 200, map[string]any{"accounts": out, "active": a.Store.Active})
+	writeJSON(w, 200, map[string]any{"accounts": out, "active": a.Store.Active, "total": len(out), "limit": "none"})
 }
 
 // handleAccountDelete removes a managed account by email. If the proxy is
