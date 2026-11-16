@@ -161,8 +161,17 @@ jobs:
 
       - name: Build AppImage
         run: |
+          # linuxdeploy names the output after the desktop file basename
+          # ("fxvpn-<version>-x86_64.AppImage"), not after Exec= — don't
+          # hardcode the name, pick up whatever single AppImage appeared.
           ./linuxdeploy-x86_64.AppImage --appdir AppDir --output appimage
-          mv fxvpn-desktop*.AppImage fxvpn-desktop-x86_64.AppImage
+          ls -la *.AppImage
+          out=$(ls fxvpn-*.AppImage x86_64*.AppImage *.AppImage 2>/dev/null | head -1)
+          if [ -z "$out" ]; then
+            echo "::error::linuxdeploy produced no AppImage"
+            exit 1
+          fi
+          mv "$out" fxvpn-desktop-x86_64.AppImage
 
       - name: Smoke test AppImage
         run: |
