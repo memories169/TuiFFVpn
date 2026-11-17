@@ -27,8 +27,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"fxsocks/webui/internal/fxa"
 )
 
 // DefaultLoginURL is the Firefox Accounts page FoxyVPN loads. The
@@ -476,7 +474,7 @@ func (p *Page) setup(ctx context.Context, targetURL string) error {
 		return err
 	}
 	if err := p.ws.call(ctx, "Page.addScriptToEvaluateOnNewDocument", map[string]any{
-		"source": strings.ReplaceAll(hookScript, "__FXA_CLIENT_ID__", fxa.ClientID),
+		"source": hookScript,
 	}, nil); err != nil {
 		return err
 	}
@@ -659,22 +657,18 @@ const hookScript = `(function () {
     if (replied[key]) return;
     replied[key] = true;
     if (command === 'fxaccounts:fxa_status') {
-      // Capability shape a real Firefox desktop browser sends. NB: the
-      // console may still log "fxa_status timed out" if the page ignores
-      // the reply — the XHR sniffer makes capture work regardless.
-      // clientId MUST be hexadecimal: the content server validates it
-      // (isHexadecimal) and an empty string 400s the whole integration
-      // right after the 2FA step ("Bad Request: Invalid Query Parameters
-      // — property clientId has failed the constraints: isHexadecimal").
-      // Use the VPN client id the engine itself authenticates with.
+      // Minimal sync-context reply: a real Firefox desktop answers a
+      // plain fx_desktop_v3&service=sync page with NO clientId and NO
+      // OAuth capabilities — those fields only exist when the channel
+      // belongs to an OAuth relying party. Advertising a clientId (even
+      // a valid hex one) makes the page spin up its OAuth native
+      // integration, whose model validation then 400s the flow right
+      // after 2FA ("property clientId ... isHexadecimal"). Omitting the
+      // field keeps the page on the sync path, which delivers the
+      // session via fxaccounts:login / the login XHR — both captured.
       reply(id, messageId, command, {
-        capabilities: {
-          authorized_streams: ['profiles', 'assertions', 'passpairs'],
-          engine: false,
-          signedInUser: null
-        },
-        signedInUser: null,
-        clientId: '__FXA_CLIENT_ID__'
+        capabilities: {},
+        signedInUser: null
       });
       return;
     }
