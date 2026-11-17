@@ -325,7 +325,7 @@
   // Browser thật = TLS fingerprint thật → edge cho qua, không cần relayer.
   async function exchangeOnPC(token, email, attempt) {
     attempt = attempt || 1;
-    var maxAttempts = 4;
+    var maxAttempts = 5;
     try {
       setStatus('tính HKDF/PKCE…');
       var res = await Promise.all([hkdfID(token), makePKCE()]);
@@ -351,11 +351,11 @@
       if (r1.status === 406) {
         if (attempt < maxAttempts) {
           var delay = attempt * 8000;
-          setStatus('<b style="color:#f59e0b">Fastly chặn (406)</b> — thử lại sau ' + (delay / 1000) + 's…');
+          setStatus('<b style="color:#f59e0b">Fastly chặn (406)</b> — tự thử lại sau ' + (delay / 1000) + 's (lần ' + (attempt + 1) + '/' + maxAttempts + ')…<br>Mẹo nhanh: tắt VPN/proxy hoặc chuyển mạng (4G) là hết ngay.');
           await new Promise(function (resolve) { setTimeout(resolve, delay); });
           return exchangeOnPC(token, email, attempt + 1);
         }
-        throw new Error('Fastly chặn (406) sau ' + maxAttempts + ' lần — bot-score của IP/ASN mạng bạn. Cấu hình RELAYER_URL (Cloudflare Worker) ở đầu script rồi bấm lại.');
+        throw new Error('Fastly chặn (406) sau ' + maxAttempts + ' lần — bot-score của IP/ASN mạng bạn. Cấu hình RELAYER_URL (Cloudflare Worker) ở đầu script (giống bản grabber cho container) rồi bấm “Đổi token trên máy”.');
       }
       if (r1.status === 401) {
         throw new Error('sessionToken bị từ chối (401) — session hết hạn hoặc chưa verify 2FA.');
