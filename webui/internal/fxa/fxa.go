@@ -157,7 +157,9 @@ func hawkHeader(method, rawURL, id string, key []byte, payload string) (string, 
 }
 
 func postJSON(ctx context.Context, url string, body map[string]any) ([]byte, int, error) {
-	return postJSONUA(ctx, url, body, UA)
+	// Firefox browser UA: the edge 406s the MozillaVPN client UA on every
+	// FxA endpoint (login included) — same rationale as postJSONUA.
+	return postJSONUA(ctx, url, body, DefaultBrowserUA)
 }
 
 // postJSONUA is postJSON with an explicit User-Agent. The Fastly edge in
@@ -190,7 +192,11 @@ func postJSONHawk(ctx context.Context, url string, body map[string]any, id strin
 			return nil, err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("User-Agent", UA)
+		// Firefox browser UA (not the MozillaVPN client UA): the edge 406s
+		// the client UA on every FxA endpoint, dragging each call through
+		// the challenge solver. postJSONUA already uses DefaultBrowserUA
+		// for the same reason; the Hawk path is no exception.
+		req.Header.Set("User-Agent", DefaultBrowserUA)
 		req.Header.Set("Accept", "application/json")
 		req.Header.Set("Authorization", auth)
 		return req, nil
