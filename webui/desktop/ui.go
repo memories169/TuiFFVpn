@@ -27,6 +27,7 @@ package desktop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -342,9 +343,19 @@ func (u *UI) startBrowserLogin() {
 				u.accMsg = err.Error()
 				u.accMsgErr = true
 			case err != nil:
-				u.accMsg = "Đăng nhập qua trình duyệt thất bại: " + err.Error() +
-					" — cần Chrome/Chromium trên máy (FXVPN_BROWSER để chỉ đường dẫn). Có thể dán token thủ công bên dưới."
-				u.accMsgErr = true
+				var exch errExchange
+				if errors.As(err, &exch) {
+					// Sign-in worked; only the token exchange failed. The
+					// session token is in the message — the user can retry
+					// the exchange via the manual token form.
+					u.accMsg = "Đăng nhập thành công nhưng đổi token thất bại: " + exch.Error() +
+						" — dán session token trên vào ô Session token bên dưới rồi bấm Đăng nhập."
+					u.accMsgErr = true
+				} else {
+					u.accMsg = "Đăng nhập qua trình duyệt thất bại: " + err.Error() +
+						" — cần Chrome/Chromium trên máy (FXVPN_BROWSER để chỉ đường dẫn). Có thể dán token thủ công bên dưới."
+					u.accMsgErr = true
+				}
 			default:
 				if cerr := u.engine.CompleteBrowserLogin(outcome); cerr != nil {
 					u.accMsg = "Lỗi lưu token: " + cerr.Error()

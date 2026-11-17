@@ -65,8 +65,11 @@ func (e *Engine) BrowserLogin(ctx context.Context, onLog func(string)) (*LoginOu
 			return st.Email, st.UID, st.Verified, nil
 		},
 	})
+	// The browser's job ends when Capture returns: either a token/code is
+	// in hand or something failed — either way close the window right away
+	// (a lingering window made users think sign-in was still in progress).
 	if browser != nil {
-		defer browser.Close()
+		browser.Close()
 	}
 	if err != nil {
 		if err == browsercapture.ErrTimeout {
@@ -100,22 +103,29 @@ func (e *Engine) BrowserLogin(ctx context.Context, onLog func(string)) (*LoginOu
 		Cookies:   browsercapture.HTTPCookies(res.Cookies),
 		UserAgent: res.UserAgent,
 	}
-	tok, err := fxa.ExchangeSessionTokenWith(ctx, res.SessionToken, opts)
-	if err != nil {
-		// The exchange itself retries the Fastly challenge internally; if
-		// it STILL fails, the edge is having a bad run. One patient retry
-		// round after a pause, then surface the error.
-		logf("Đổi token lần đầu thất bại (%v) — thử lại sau 10s…", err)
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(10 * time.Second):
+	var tok *fxa.TokenResponse
+	var xerr error
+	for round := 1; round <= 3; round++ {
+		tok, xerr = fxa.ExchangeSessionTokenWith(ctx, res.SessionToken, opts)
+		if xerr == nil {
+			break
 		}
-		tok, err = fxa.ExchangeSessionTokenWith(ctx, res.SessionToken, opts)
-		if err != nil {
-			logf("Đổi token thất bại: " + err.Error())
-			return nil, err
+		// The exchange retries the Fastly challenge internally; failing
+		// three rounds means the edge is having a sustained bad run.
+		if round < 3 {
+			logf("Đổi token lần %d thất bại (%v) — thử lại sau 10s…", round, xerr)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(10 * time.Second):
+			}
 		}
+	}
+	if xerr != nil {
+		// The session token is REAL and unspent — hand it to the user so
+		// the exchange can be completed later (or the token form used).
+		logf("Đổi token thất bại sau 3 lần: " + xerr.Error())
+		return nil, errExchange{sessionToken: res.SessionToken, err: xerr}
 	}
 	email := res.Email
 	logf("Đăng nhập thành công" + emailSuffix(email))
@@ -158,6 +168,19 @@ var (
 	errBrowserTimeout = desktopErr("hết thời gian chờ đăng nhập (10 phút) — thử lại")
 	errNoTokens       = desktopErr("không có token nào để lưu")
 )
+
+// errExchange means the sign-in SUCCEEDED and a real session token was
+// captured, but exchanging it for OAuth tokens failed (edge turbulence).
+// The token travels in the error so the user can retry the exchange via
+// the manual form without signing in again.
+type errExchange struct {
+	sessionToken string
+	err          error
+}
+
+func (e errExchange) Error() string {
+	return e.err.Error() + " — session token đã lấy được: " + e.sessionToken
+}
 
 // desktopErr is a plain string error for the desktop package.
 type desktopErr string

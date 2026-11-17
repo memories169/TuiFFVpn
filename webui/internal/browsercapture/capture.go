@@ -550,8 +550,12 @@ const (
 // challenge cookies land in the profile. Best effort: any failure just
 // logs and continues.
 func (p *Page) warmFastly(ctx context.Context, logf func(string, ...any)) {
+	// Short deadlines: the warm-up is a bonus, not a gate. The API origin's
+	// challenge usually settles in a few seconds; if it doesn't, move on —
+	// the exchange path in the engine solves the challenge on its own when
+	// the captured token is exchanged.
 	for _, u := range []string{bootstrapAPI, bootstrapSite} {
-		wctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+		wctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		if err := p.navigateAndWait(wctx, u); err != nil {
 			logf("warm %s: %v", u, err)
 		}
@@ -559,7 +563,7 @@ func (p *Page) warmFastly(ctx context.Context, logf func(string, ...any)) {
 	}
 	// Final hop: the login page itself, now carrying both origins'
 	// challenge cookies.
-	wctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	wctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	if err := p.navigateAndWait(wctx, p.loginURL); err != nil {
 		logf("open login page: %v", err)
 	}
@@ -583,14 +587,14 @@ func (p *Page) navigateAndWait(ctx context.Context, u string) error {
 			_ = json.Unmarshal(raw, &st)
 			if st.Value == "complete" || st.Value == "interactive" {
 				// Give the challenge JS a moment to finish its work.
-				time.Sleep(1500 * time.Millisecond)
+				time.Sleep(1200 * time.Millisecond)
 				return nil
 			}
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(400 * time.Millisecond):
+		case <-time.After(300 * time.Millisecond):
 		}
 	}
 	return nil
