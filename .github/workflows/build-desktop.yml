@@ -241,9 +241,9 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: macos-13 # Intel
+            runner: macos-15-intel # Intel (macos-13/14 retired)
           - arch: arm64
-            runner: macos-14 # Apple Silicon
+            runner: macos-15 # Apple Silicon
     steps:
       - name: Checkout
         uses: actions/checkout@v4
