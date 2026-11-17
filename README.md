@@ -65,6 +65,19 @@ Chi tiết cài đặt: Linux [docs/desktop-linux.md](docs/desktop-linux.md) (th
 · Windows (native): [docs/install-windows.md](docs/install-windows.md)
 · macOS (native): [docs/install-macos.md](docs/install-macos.md)
 
+#### Sign-in bị Fastly chặn? Dùng userscript trong Firefox thật
+
+Chromium profile temp mà app mở đôi khi bị Fastly CAPTCHA 406 (TLS
+fingerprint "lạnh"). Khi đó dùng `scripts/fxvpn-desktop-grabber.user.js`
+(Tampermonkey/Violentmonkey trong **Firefox thật của bạn** — TLS thật =
+edge cho qua): đăng nhập `accounts.firefox.com` bình thường, script bắt
+sessionToken, **tự copy vào clipboard** và hiện trong panel → dán vào ô
+**"Session token (từ đăng nhập browser)"** trong app rồi bấm **"Đổi
+session thành token"**. Nút "Đổi token trên máy" (tuỳ chọn) đổi luôn
+OAuth ngay trong script — dán access/refresh vào form "Thêm bằng token".
+Bản này riêng cho app desktop; bản cho container là
+`scripts/fxvpn-pc-grabber.user.js` (đẩy thẳng vào console qua HTTP).
+
 State file mặc định `~/.local/state/fxvpn/state.json` — cùng schema với
 container, trỏ `--state` vào file của container để dùng lại account có sẵn.
 
