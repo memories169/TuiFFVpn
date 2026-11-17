@@ -635,10 +635,47 @@ const hookScript = `(function () {
   function onChromeEvent(e) {
     var parsed = parse(e && e.detail);
     if (!parsed) return;
+    if (parsed.envelope.__fxvpnReply) return;
     var message = parsed.message;
+    var command = String(message.command);
     var data = message.data || message.params || {};
     var token = data.sessionToken || data.token || '';
-    if (token) emit(token, String(message.command), data);
+    if (token) {
+      emit(token, command, data);
+      return;
+    }
+    // The page asks the browser questions on the ToChrome channel — this
+    // hook IS the browser now, so answer here. Previously the replies were
+    // wired to onContentEvent (a channel the page never sends questions
+    // on), so fxa_status and can_link_account were never answered and the
+    // trusted fx_desktop_v3 flow stalled at the email step with a greyed
+    // sign-in button.
+    var id = parsed.envelope.id || CHANNEL;
+    var messageId = message.messageId || parsed.envelope.messageId || '';
+    if (!messageId) return;
+    var key = command + ':' + messageId;
+    if (replied[key]) return;
+    replied[key] = true;
+    if (command === 'fxaccounts:fxa_status') {
+      // Capability shape a real Firefox desktop browser sends. NB: the
+      // console may still log "fxa_status timed out" if the page ignores
+      // the reply — the XHR sniffer makes capture work regardless.
+      reply(id, messageId, command, {
+        capabilities: {
+          authorized_streams: ['profiles', 'assertions', 'passpairs'],
+          engine: false,
+          signedInUser: null
+        },
+        signedInUser: null,
+        clientId: ''
+      });
+      return;
+    }
+    if (command === 'fxaccounts:can_link_account') {
+      reply(id, messageId, command, { ok: true });
+      return;
+    }
+    reply(id, messageId, command, { ok: true });
   }
 
   function reply(id, messageId, command, data) {
@@ -654,45 +691,16 @@ const hookScript = `(function () {
   var replied = {};
 
   function onContentEvent(e) {
-    var parsed = parse(e && e.detail);
-    if (!parsed) return;
-    if (parsed.envelope.__fxvpnReply) return;
-    var message = parsed.message;
-    var command = String(message.command);
-    var id = parsed.envelope.id || CHANNEL;
-    var messageId = message.messageId || parsed.envelope.messageId || '';
-    if (!messageId) return;
-    var key = command + ':' + messageId;
-    if (replied[key]) return;
-    replied[key] = true;
-    if (command === 'fxaccounts:fxa_status') {
-      // Reply with the capability shape the content server expects from a
-      // real Firefox desktop browser. An empty capabilities object made the
-      // trusted fx_desktop_v3 flow stall at the email step (button greys
-      // out waiting for a can_link_account reply it then never trusts).
-      // NB: the console log "fxa_status timed out" still appears when the
-      // reply is ignored — the XHR sniffer below is what makes capture
-      // work regardless of this handshake's fate.
-      reply(id, messageId, command, {
-        capabilities: {
-          authorized_streams: ['profiles', 'assertions', 'passpairs'],
-          engine: false,
-          signedInUser: null
-        },
-        signedInUser: null,
-        clientId: ''
-      });
-      return;
-    }    if (command === 'fxaccounts:can_link_account') {
-      reply(id, messageId, command, { ok: true });
-      return;
-    }
-    reply(id, messageId, command, { ok: true });
+    // Some FxA builds dispatch page->browser messages on the Content
+    // channel too (channel name mismatch between builds) — treat those as
+    // chrome events so the token emit and replies still work.
+    onChromeEvent(e);
   }
 
   window.addEventListener('WebChannelMessageToChrome', onChromeEvent, true);
   document.addEventListener('WebChannelMessageToChrome', onChromeEvent, true);
   window.addEventListener('WebChannelMessageToContent', onContentEvent, true);
+  document.addEventListener('WebChannelMessageToContent', onContentEvent, true);
 })();`
 
 // waitForToken polls the page and listens to the binding until a valid token
