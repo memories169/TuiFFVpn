@@ -459,7 +459,13 @@ func (b *Browser) openTarget(ctx context.Context) (*cdpClient, error) {
 
 // setup enables the domains, installs the WebChannel hook and navigates.
 func (p *Page) setup(ctx context.Context, targetURL string) error {
-	for _, method := range []string{"Page.enable", "Runtime.enable"} {
+	// Network domain: intercept /account/login and /oauth/token responses
+	// directly. The WebChannel handshake is the primary capture path, but
+	// Chromium doesn't speak WebChannel natively and the content server's
+	// handshake expectations vary — the login XHR response carries the same
+	// sessionToken regardless, so sniffing it makes capture work even when
+	// the page-side flow stalls.
+	for _, method := range []string{"Page.enable", "Runtime.enable", "Network.enable"} {
 		if err := p.ws.call(ctx, method, map[string]any{}, nil); err != nil {
 			return err
 		}
@@ -563,6 +569,58 @@ const hookScript = `(function () {
     try { console.log('[fxvpn] sessionToken captured via ' + command); } catch (e) {}
   }
 
+  // --- XHR/fetch sniffer -------------------------------------------------
+  // The content server returns the sessionToken in the /account/login (and
+  // /oauth/token) response body. In Chromium the WebChannel handshake can
+  // stall the page flow, but the XHR still completes — sniff the body and
+  // grab the token from there. Runs in the MAIN world (injected before any
+  // page script), so the wrapper replaces the page's own XHR/fetch.
+  var OrigXHR = window.XMLHttpRequest;
+  function sniff(text) {
+    try {
+      if (!text || typeof text !== 'string' || text.length > 100000) return;
+      var body = JSON.parse(text);
+      var tok = body.sessionToken || (body.data && body.data.sessionToken) || '';
+      if (!tok) return;
+      emit(tok, 'xhr:' + (body.grant_type || 'login'), body);
+    } catch (e) { /* not JSON or not a login response — ignore */ }
+  }
+  if (OrigXHR) {
+    function PatchedXHR() { return new OrigXHR(); }
+    PatchedXHR.prototype = OrigXHR.prototype;
+    ['onreadystatechange', 'addEventListener', 'open', 'send'].forEach(function (m) {
+      Object.defineProperty(PatchedXHR.prototype, m, {
+        get: function () { return OrigXHR.prototype[m]; },
+        set: function (fn) {
+          if (m === 'onreadystatechange') {
+            OrigXHR.prototype[m] = function () {
+              try {
+                if (this.readyState === 4 && this.responseText) sniff(this.responseText);
+              } catch (e) {}
+              return fn.apply(this, arguments);
+            };
+          } else { OrigXHR.prototype[m] = fn; }
+        }
+      });
+    });
+    window.XMLHttpRequest = PatchedXHR;
+  }
+  var origFetch = window.fetch;
+  if (origFetch) {
+    window.fetch = function () {
+      var args = arguments;
+      return origFetch.apply(this, args).then(function (resp) {
+        try {
+          var url = (resp && resp.url) || String(args[0] || '');
+          if (url.indexOf('/account/login') !== -1 || url.indexOf('/oauth/token') !== -1) {
+            resp.clone().text().then(sniff).catch(function () {});
+          }
+        } catch (e) {}
+        return resp;
+      });
+    };
+  }
+
   function parse(detail) {
     var envelope = detail;
     if (typeof envelope === 'string') {
@@ -611,7 +669,19 @@ const hookScript = `(function () {
     if (replied[key]) return;
     replied[key] = true;
     if (command === 'fxaccounts:fxa_status') {
-      reply(id, messageId, command, { capabilities: {}, signedInUser: null, clientId: '' });
+      // Reply with the capability shape the content server expects from a
+      // real Firefox desktop browser. An empty capabilities object made the
+      // trusted fx_desktop_v3 flow stall at the email step (button greys
+      // out waiting for a can_link_account reply it then never trusts).
+      reply(id, messageId, command, {
+        capabilities: {
+          authorized_streams: ['profiles', 'assertions', 'passpairs'],
+          engine: false,
+          signedInUser: null
+        },
+        signedInUser: null,
+        clientId: ''
+      });
       return;
     }
     if (command === 'fxaccounts:can_link_account') {
