@@ -27,6 +27,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"fxsocks/webui/internal/fxa"
 )
 
 // DefaultLoginURL is the Firefox Accounts page FoxyVPN loads. The
@@ -474,7 +476,7 @@ func (p *Page) setup(ctx context.Context, targetURL string) error {
 		return err
 	}
 	if err := p.ws.call(ctx, "Page.addScriptToEvaluateOnNewDocument", map[string]any{
-		"source": hookScript,
+		"source": strings.ReplaceAll(hookScript, "__FXA_CLIENT_ID__", fxa.ClientID),
 	}, nil); err != nil {
 		return err
 	}
@@ -660,6 +662,11 @@ const hookScript = `(function () {
       // Capability shape a real Firefox desktop browser sends. NB: the
       // console may still log "fxa_status timed out" if the page ignores
       // the reply — the XHR sniffer makes capture work regardless.
+      // clientId MUST be hexadecimal: the content server validates it
+      // (isHexadecimal) and an empty string 400s the whole integration
+      // right after the 2FA step ("Bad Request: Invalid Query Parameters
+      // — property clientId has failed the constraints: isHexadecimal").
+      // Use the VPN client id the engine itself authenticates with.
       reply(id, messageId, command, {
         capabilities: {
           authorized_streams: ['profiles', 'assertions', 'passpairs'],
@@ -667,7 +674,7 @@ const hookScript = `(function () {
           signedInUser: null
         },
         signedInUser: null,
-        clientId: ''
+        clientId: '__FXA_CLIENT_ID__'
       });
       return;
     }
