@@ -29,6 +29,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"fxsocks/webui/internal/fxa"
 )
 
 // DefaultLoginURL is the Firefox Accounts page FoxyVPN loads: the REAL
@@ -57,9 +59,16 @@ const (
 )
 
 // loginURL builds the actual entry URL: the state placeholder becomes a
-// fresh random value per run so the code can be tied to this capture.
+// fresh random value per run so the code can be tied to this capture, and
+// the client-id placeholder becomes the engine's OAuth client id. Both
+// must be replaced — the previous version only replaced state, so the
+// page received the literal string "__OAUTH_CLIENT_ID__" and its
+// isHexadecimal validation 400'd the flow at load.
 func loginURL(state string) string {
-	return strings.ReplaceAll(DefaultLoginURL, OAuthState, state)
+	return strings.NewReplacer(
+		OAuthState, state,
+		OAuthClientID, fxa.ClientID,
+	).Replace(DefaultLoginURL)
 }
 
 // randomHex returns n random bytes, hex-encoded.
