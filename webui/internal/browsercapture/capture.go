@@ -544,6 +544,7 @@ func (b *Browser) openTarget(ctx context.Context) (*cdpClient, error) {
 const (
 	bootstrapAPI  = "https://api.accounts.firefox.com/"
 	bootstrapSite = "https://accounts.firefox.com/"
+	warmDeadline  = 20 * time.Second
 )
 
 // warmFastly navigates the page through both FxA origins so their
@@ -555,7 +556,7 @@ func (p *Page) warmFastly(ctx context.Context, logf func(string, ...any)) {
 	// the exchange path in the engine solves the challenge on its own when
 	// the captured token is exchanged.
 	for _, u := range []string{bootstrapAPI, bootstrapSite} {
-		wctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		wctx, cancel := context.WithTimeout(ctx, warmDeadline)
 		if err := p.navigateAndWait(wctx, u); err != nil {
 			logf("warm %s: %v", u, err)
 		}
@@ -563,7 +564,7 @@ func (p *Page) warmFastly(ctx context.Context, logf func(string, ...any)) {
 	}
 	// Final hop: the login page itself, now carrying both origins'
 	// challenge cookies.
-	wctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	wctx, cancel := context.WithTimeout(ctx, warmDeadline)
 	if err := p.navigateAndWait(wctx, p.loginURL); err != nil {
 		logf("open login page: %v", err)
 	}
@@ -576,9 +577,9 @@ func (p *Page) navigateAndWait(ctx context.Context, u string) error {
 	if err := p.ws.call(ctx, "Page.navigate", map[string]any{"url": u}, nil); err != nil {
 		return err
 	}
-	// Poll until document.readyState is complete or the deadline hits.
-	deadline := time.Now().Add(20 * time.Second)
-	for time.Now().Before(deadline) {
+	// Poll until document.readyState is complete/interactive or ctx is
+	// done — no inner deadline; the caller's ctx bounds the whole hop.
+	for {
 		var st struct {
 			Value string `json:"value"`
 		}
@@ -597,7 +598,6 @@ func (p *Page) navigateAndWait(ctx context.Context, u string) error {
 		case <-time.After(300 * time.Millisecond):
 		}
 	}
-	return nil
 }
 
 func (p *Page) setup(ctx context.Context, targetURL string) error {
@@ -898,6 +898,20 @@ const hookScript = `(function () {
 func waitForToken(ctx context.Context, page *Page, opts Options) (*Result, error) {
 	tried := make(map[string]bool)
 
+	// pending is the current candidate token awaiting a clean validation.
+	// A token captured BEFORE the second factor completes (FxA hands one
+	// over as soon as password passes, with the session still unverified)
+	// must NOT finish the capture: closing the browser then rips the 2FA
+	// screen away from the user mid-sign-in. Such a candidate is parked
+	// here and RE-VALIDATED on every tick — the same token string stays
+	// valid after 2FA completes, and once the status call succeeds the
+	// capture finishes with verified=true.
+	var pendingToken, pendingEmail, pendingUID, pendingSource string
+
+	finish := func(token, email, uid, source string) *Result {
+		return &Result{SessionToken: token, Email: email, UID: uid, Source: source}
+	}
+
 	accept := func(ctx context.Context, token, email, uid, source string) (*Result, bool) {
 		token = strings.ToLower(strings.TrimSpace(token))
 		if !IsSessionToken(token) || tried[token] {
@@ -908,27 +922,57 @@ func waitForToken(ctx context.Context, page *Page, opts Options) (*Result, error
 		if opts.Validate != nil {
 			cookies, _ := page.CookiesFor(ctx)
 			vEmail, vUID, verified, err := opts.Validate(ctx, token, cookies, opts.UserAgent)
-			if err != nil {
-				// The token came from FxA's own delivery (WebChannel or
-				// login XHR) — it is not the thing being validated that
-				// failed; the VALIDATION CALL did (typically the Fastly
-				// edge 406ing, or the network hiccuping). Rejecting the
-				// token here threw away a perfectly good capture while
-				// the edge was in a bad mood. The exchange path in the
-				// engine retries the challenge itself, so accept the
-				// token and let the caller's retry machinery decide.
-				opts.Logf("validation unavailable (%v) — accepting token anyway", err)
-				return &Result{SessionToken: token, Email: email, UID: uid, Source: source}, true
+			switch {
+			case err == nil:
+				if email == "" {
+					email = vEmail
+				}
+				if uid == "" {
+					uid = vUID
+				}
+				return &Result{SessionToken: token, Email: email, UID: uid, Verified: verified, Source: source}, true
+			case errors.Is(err, fxa.ErrInvalidSessionToken):
+				// FxA itself said the token is bad — discard for good.
+				opts.Logf("token rejected by FxA: %v", err)
+				return nil, false
+			default:
+				// Edge/network trouble — park the candidate and keep the
+				// browser open so the user can finish 2FA; revalidate
+				// this same token on every tick (its status flips to
+				// verified once the second factor completes).
+				opts.Logf("validation unavailable (%v) — keeping browser open, will re-check", err)
+				pendingToken, pendingEmail, pendingUID, pendingSource = token, email, uid, source
+				return nil, false
 			}
-			if email == "" {
-				email = vEmail
-			}
-			if uid == "" {
-				uid = vUID
-			}
-			return &Result{SessionToken: token, Email: email, UID: uid, Verified: verified, Source: source}, true
 		}
-		return &Result{SessionToken: token, Email: email, UID: uid, Source: source}, true
+		return finish(token, email, uid, source), true
+	}
+
+	// revalidate checks the parked candidate; called on every ticker tick.
+	revalidate := func(ctx context.Context) (*Result, bool) {
+		if pendingToken == "" || opts.Validate == nil {
+			return nil, false
+		}
+		cookies, _ := page.CookiesFor(ctx)
+		vEmail, vUID, verified, err := opts.Validate(ctx, pendingToken, cookies, opts.UserAgent)
+		if err != nil {
+			if errors.Is(err, fxa.ErrInvalidSessionToken) {
+				opts.Logf("parked token rejected by FxA: %v", err)
+				pendingToken = ""
+			}
+			return nil, false
+		}
+		email, uid := pendingEmail, pendingUID
+		if email == "" {
+			email = vEmail
+		}
+		if uid == "" {
+			uid = vUID
+		}
+		res := finish(pendingToken, email, uid, pendingSource)
+		res.Verified = verified
+		pendingToken = ""
+		return res, true
 	}
 
 	ticker := time.NewTicker(300 * time.Millisecond)
@@ -1015,6 +1059,11 @@ func waitForToken(ctx context.Context, page *Page, opts Options) (*Result, error
 				}, nil
 			}
 			if res, ok := accept(ctx, st.Token, st.Email, st.UID, st.Source); ok {
+				return res, nil
+			}
+			// A parked candidate (validation was down when it arrived,
+			// e.g. captured before 2FA completed) — retry its validation.
+			if res, ok := revalidate(ctx); ok {
 				return res, nil
 			}
 		}
