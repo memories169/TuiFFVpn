@@ -223,42 +223,6 @@ func (e *Engine) AddAccount(ctx context.Context, email, password, session, code 
 	}
 }
 
-// AddSessionToken exchanges a captured session token for OAuth tokens and
-// stores the account. The browser-capture flow hands its session token to
-// the user when the automatic exchange fails; this is the retry entry
-// point (the manual email+password path shares completeSession).
-func (e *Engine) AddSessionToken(ctx context.Context, sessionToken string) error {
-	var tok *fxa.TokenResponse
-	var err error
-	for round := 1; round <= 3; round++ {
-		// Firefox UA (TokenOptions zero value) — the UA the Fastly edge
-		// passes; the VPN client UA gets 406'd on sight. Three rounds
-		// with a pause ride out the edge's flaky spells, matching the
-		// browser-capture retry behavior.
-		tok, err = fxa.ExchangeSessionTokenWith(ctx, strings.TrimSpace(sessionToken), fxa.TokenOptions{})
-		if err == nil {
-			break
-		}
-		if round < 3 {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(10 * time.Second):
-			}
-		}
-	}
-	if err != nil {
-		return err
-	}
-	email := ""
-	if st, serr := fxa.SessionStatusWith(ctx, strings.TrimSpace(sessionToken), fxa.TokenOptions{}, fxa.AuthServer+"/recovery_email/status"); serr == nil {
-		email = st.Email
-	}
-	e.app.UpsertAccount(email, tok.AccessToken, tok.RefreshToken, tok.ExpiresIn)
-	e.app.ProbeQuota(tok.AccessToken, email)
-	return nil
-}
-
 // completeSession exchanges the FxA session for OAuth tokens and persists
 // them (mirrors webapp.completeSession).
 func (e *Engine) completeSession(ctx context.Context, sessionToken, email string) error {

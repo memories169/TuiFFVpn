@@ -70,13 +70,13 @@ Chi tiết cài đặt: Linux [docs/desktop-linux.md](docs/desktop-linux.md) (th
 Chromium profile temp mà app mở đôi khi bị Fastly CAPTCHA 406 (TLS
 fingerprint "lạnh"). Khi đó dùng `scripts/fxvpn-desktop-grabber.user.js`
 (Tampermonkey/Violentmonkey trong **Firefox thật của bạn** — TLS thật =
-edge cho qua): đăng nhập `accounts.firefox.com` bình thường, script bắt
-sessionToken, **tự copy vào clipboard** và hiện trong panel → dán vào ô
-**"Session token (từ đăng nhập browser)"** trong app rồi bấm **"Đổi
-session thành token"**. Nút "Đổi token trên máy" (tuỳ chọn) đổi luôn
-OAuth ngay trong script — dán access/refresh vào form "Thêm bằng token".
-Bản này riêng cho app desktop; bản cho container là
-`scripts/fxvpn-pc-grabber.user.js` (đẩy thẳng vào console qua HTTP).
+edge cho qua): đăng nhập `accounts.firefox.com` bình thường, script tự
+**đổi OAuth ngay trên máy** rồi **copy access/refresh vào clipboard** →
+dán vào form **"Thêm bằng token"** trong app (email + access + refresh).
+Đây là đường duy nhất hoạt động khi IP bị Fastly CAPTCHA-lock, vì chỉ
+request từ browser thật mới qua được edge. Bản này riêng cho app
+desktop; bản cho container là `scripts/fxvpn-pc-grabber.user.js` (đẩy
+thẳng vào console qua HTTP).
 
 State file mặc định `~/.local/state/fxvpn/state.json` — cùng schema với
 container, trỏ `--state` vào file của container để dùng lại account có sẵn.

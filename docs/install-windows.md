@@ -47,9 +47,10 @@ win32 thuần Go.)
   1. Nhập **email + mật khẩu** (+ mã 2FA nếu có) rồi bấm **Đăng nhập**
   2. Nếu Fastly chặn (lỗi 406/CAPTCHA): dùng userscript
      `scripts/fxvpn-desktop-grabber.user.js` trong Firefox thật của bạn —
-     nó tự copy sessionToken, dán vào ô **"Session token"** rồi bấm
-     **"Đổi session thành token"**. Hoặc dán access/refresh token vào
-     form "Thêm bằng token".
+     script tự ĐỔI OAuth ngay trong browser rồi copy access/refresh vào
+     clipboard; dán vào form "Thêm bằng token" (email + access +
+     refresh). Chỉ request từ browser thật mới qua được edge khi IP bị
+     CAPTCHA-lock.
 - SOCKS5 proxy lắng nghe `127.0.0.1:1080` (đổi bằng `--socks 127.0.0.1:9999`)
 - Cấu hình lưu tại `%AppData%\fxvpn\state.json`
 

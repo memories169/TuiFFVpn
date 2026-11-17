@@ -28,7 +28,8 @@
  *
  * Bản này làm cùng một việc bắt token nhưng đích đến là APP DESKTOP: app
  * desktop không mở HTTP server nên không thể "đẩy" vào app được — script
- * Copy token vào clipboard + hiển thị trong panel, bạn dán vào app.
+ * ĐỔI TOKEN NGAY TRÊN MÁY (browser thật = edge cho qua) rồi copy access/
+ * refresh vào clipboard; bạn dán vào form "Thêm bằng token" của app.
  *
  * KHÔNG dùng chung với bản container: script này không POST token đi đâu cả
  * (bản container đẩy token vào máy chủ qua HTTP; bản này copy token để dán
@@ -40,10 +41,11 @@
 
   // ==== CẤU HÌNH ============================================================
   // true = script tự gọi OAuth exchange NGAY TRÊN MÁY (2 request tới FxA với
-  // UA Firefox thật của browser) và hiển thị sẵn access/refresh token — bạn
-  // có thể dán thẳng vào form "Thêm bằng token" của app. false = chỉ bắt
-  // sessionToken (dán vào ô Session token của app, app sẽ tự đổi).
-  var EXCHANGE_ON_PC = false;
+  // UA Firefox thật của browser) rồi tự copy access/refresh token vào
+  // clipboard — dán thẳng vào form "Thêm bằng token" của app (nhớ nhập
+  // email). Giữ true: nếu IP bị Fastly CAPTCHA-lock thì đổi token TRONG APP
+  // cũng vô ích — chỉ request từ browser thật mới qua được edge.
+  var EXCHANGE_ON_PC = true;
   // ==========================================================================
 
   var SESSION_HEX = /^[0-9a-f]{64}$/;
@@ -199,21 +201,19 @@
       '<button id="' + PANEL_ID + '-copy" style="flex:1;background:#0060df">📋 Copy token</button>' +
       '<button id="' + PANEL_ID + '-exch" style="flex:1;background:#4d8dff">Đổi token trên máy</button>' +
       '</div>' +
-      '<div class="st" style="margin-top:6px">Sau khi có token: dán vào app desktop — ô “Session token (từ đăng nhập browser)” rồi bấm “Đổi session thành token”. (Nếu đã đổi OAuth ở đây: dán access/refresh vào form “Thêm bằng token”.)</div>';
+      '<div class="st" style="margin-top:6px">Token sau khi đổi được copy tự động — dán vào form “Thêm bằng token” của app desktop (email + access + refresh).</div>';
     document.body.appendChild(div);
     document.getElementById(PANEL_ID + '-x').onclick = function () { div.remove(); };
     document.getElementById(PANEL_ID + '-copy').onclick = function () {
       if (!captured || !captured.token) { setStatus('chưa có token nào.'); return; }
-      var payload = captured.oauth
-        ? JSON.stringify({
-            access_token: captured.oauth.access_token,
-            refresh_token: captured.oauth.refresh_token || '',
-            expires_in: captured.oauth.expires_in || 0,
-            session_token: captured.token,
-          }, null, 2)
-        : captured.token;
+      var payload;
+      if (captured.oauth) {
+        payload = captured.email + '\n' + captured.oauth.access_token + '\n' + (captured.oauth.refresh_token || '');
+      } else {
+        payload = captured.token;
+      }
       copyText(payload);
-      setStatus('<b style="color:#8fffb0">đã copy ✓</b> dán vào app desktop.');
+      setStatus('<b style="color:#8fffb0">đã copy ✓</b> — OAuth: email/access/refresh mỗi dòng một ô; session: 1 token.');
     };
     document.getElementById(PANEL_ID + '-exch').onclick = function () {
       if (captured && captured.token) exchangeOnPC(captured.token, captured.email);
@@ -242,14 +242,13 @@
     if (captured && captured.token === token) return;
     captured = { token: token, email: email, uid: uid, source: source, oauth: null };
     buildPanel();
-    copyText(token);
     setStatus(
       '<b style="color:#8fffb0">bắt được sessionToken ✓ (' + esc(source) + ')</b>' +
       (email ? ' — ' + esc(email) : '') +
-      '<br>ĐÃ COPY vào clipboard. Dán vào app desktop: ô “Session token” → “Đổi session thành token”.'
+      '<br>đang đổi sang OAuth ngay trên máy này…'
     );
-    setOutput(token);
     if (EXCHANGE_ON_PC) exchangeOnPC(token, email);
+    else setStatus('bắt được sessionToken — bấm “Đổi token trên máy”.');
   }
 
   // ---- WebCrypto helpers (tái dùng logic bản grabber cho container) -----------
@@ -364,8 +363,11 @@
       if (!tok.access_token) throw new Error('token response thiếu access_token');
 
       captured.oauth = tok;
-      setStatus('<b style="color:#8fffb0">đã đổi OAuth ✓</b>' + (email ? ' — ' + esc(email) : '') +
-        '<br>Dán access/refresh vào form “Thêm bằng token” của app (nhớ nhập email).');
+      var pair = email + '\n' + tok.access_token + '\n' + (tok.refresh_token || '');
+      copyText(pair);
+      setStatus('<b style="color:#8fffb0">đã đổi OAuth ✓ — ĐÃ COPY vào clipboard</b>' +
+        (email ? ' — ' + esc(email) : '') +
+        '<br>Dán vào form “Thêm bằng token” của app: email vào ô Email, access vào ô Access token, refresh vào ô Refresh token (mỗi dòng một ô).');
       setOutput({
         email: email,
         access_token: tok.access_token,
