@@ -905,8 +905,16 @@ func waitForToken(ctx context.Context, page *Page, opts Options) (*Result, error
 			cookies, _ := page.CookiesFor(ctx)
 			vEmail, vUID, verified, err := opts.Validate(ctx, token, cookies, opts.UserAgent)
 			if err != nil {
-				opts.Logf("token rejected by FxA: %v", err)
-				return nil, false
+				// The token came from FxA's own delivery (WebChannel or
+				// login XHR) — it is not the thing being validated that
+				// failed; the VALIDATION CALL did (typically the Fastly
+				// edge 406ing, or the network hiccuping). Rejecting the
+				// token here threw away a perfectly good capture while
+				// the edge was in a bad mood. The exchange path in the
+				// engine retries the challenge itself, so accept the
+				// token and let the caller's retry machinery decide.
+				opts.Logf("validation unavailable (%v) — accepting token anyway", err)
+				return &Result{SessionToken: token, Email: email, UID: uid, Source: source}, true
 			}
 			if email == "" {
 				email = vEmail

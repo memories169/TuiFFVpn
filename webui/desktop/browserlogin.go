@@ -102,10 +102,20 @@ func (e *Engine) BrowserLogin(ctx context.Context, onLog func(string)) (*LoginOu
 	}
 	tok, err := fxa.ExchangeSessionTokenWith(ctx, res.SessionToken, opts)
 	if err != nil {
-		// The session token itself is still good — surface it so the user
-		// can retry the exchange or paste it into the token form.
-		logf("Đổi token thất bại: " + err.Error())
-		return nil, err
+		// The exchange itself retries the Fastly challenge internally; if
+		// it STILL fails, the edge is having a bad run. One patient retry
+		// round after a pause, then surface the error.
+		logf("Đổi token lần đầu thất bại (%v) — thử lại sau 10s…", err)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(10 * time.Second):
+		}
+		tok, err = fxa.ExchangeSessionTokenWith(ctx, res.SessionToken, opts)
+		if err != nil {
+			logf("Đổi token thất bại: " + err.Error())
+			return nil, err
+		}
 	}
 	email := res.Email
 	logf("Đăng nhập thành công" + emailSuffix(email))
