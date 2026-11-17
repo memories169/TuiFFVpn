@@ -203,25 +203,11 @@ func Capture(ctx context.Context, opts Options) (*Result, *Browser, error) {
 	// /v1/account/login XHR 406s, stalling sign-in at the password step.
 	// The solver runs with the SAME UA the browser presents so the cookie
 	// binds to this client (edge ties the cookie to UA+IP).
-	if ua != "" {
-		if cookies, err := fxa.SolveChallengeCookies(ctx, ua); err != nil {
-			opts.Logf("fastly pre-seed skipped: %v", err)
-		} else {
-			for _, hc := range cookies {
-				opts.Logf("seeding fastly cookie %s", hc.Name)
-				if err := page.SeedCookie(ctx, Cookie{
-					Name:    hc.Name,
-					Value:   hc.Value,
-					Domain:  hc.Domain,
-					Path:    hc.Path,
-					Secure:  hc.Secure,
-					Expires: float64(hc.Expires.Unix()),
-				}); err != nil {
-					opts.Logf("seed %s failed: %v", hc.Name, err)
-				}
-			}
-		}
-	}
+	// Warm the Fastly edge for both FxA origins BEFORE the login page: the
+	// challenge cookie is bound to the browser's own TLS fingerprint, so it
+	// must be earned by THIS browser, not by the Go solver. Visiting the
+	// origins lets the challenge JS run and plant _fs_ch_* for each host.
+	page.warmFastly(ctx, opts.Logf)
 
 	if !opts.KeepBrowser {
 		defer page.Close()
@@ -546,6 +532,61 @@ func (b *Browser) openTarget(ctx context.Context) (*cdpClient, error) {
 }
 
 // setup enables the domains, installs the WebChannel hook and navigates.
+// bootstrapURLs are visited BEFORE the login page. The Fastly anti-bot
+// edge challenges each FxA origin independently; a hidden window visiting
+// the API origin lets the challenge's own JS run in a real Chromium context
+// and plant its _fs_ch_* cookie for that host. Pre-seeding from the Go
+// solver is not enough: the edge additionally binds the cookie to the TLS
+// fingerprint of the client that solved it, and Go's TLS stack differs
+// from Chromium's — only a cookie earned BY the browser counts.
+const (
+	bootstrapAPI  = "https://api.accounts.firefox.com/"
+	bootstrapSite = "https://accounts.firefox.com/"
+)
+
+// warmFastly navigates the page through both FxA origins so their
+// challenge cookies land in the profile. Best effort: any failure just
+// logs and continues.
+func (p *Page) warmFastly(ctx context.Context, logf func(string, ...any)) {
+	for _, u := range []string{bootstrapAPI, bootstrapSite} {
+		wctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+		if err := p.navigateAndWait(wctx, u); err != nil {
+			logf("warm %s: %v", u, err)
+		}
+		cancel()
+	}
+}
+
+// navigateAndWait drives the page to u and waits for the load event
+// (or the challenge's JS to settle), then returns.
+func (p *Page) navigateAndWait(ctx context.Context, u string) error {
+	if err := p.ws.call(ctx, "Page.navigate", map[string]any{"url": u}, nil); err != nil {
+		return err
+	}
+	// Poll until document.readyState is complete or the deadline hits.
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		var st struct {
+			Value string `json:"value"`
+		}
+		raw, err := p.evaluate(ctx, `(() => document.readyState)()`)
+		if err == nil {
+			_ = json.Unmarshal(raw, &st)
+			if st.Value == "complete" || st.Value == "interactive" {
+				// Give the challenge JS a moment to finish its work.
+				time.Sleep(1500 * time.Millisecond)
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(400 * time.Millisecond):
+		}
+	}
+	return nil
+}
+
 func (p *Page) setup(ctx context.Context, targetURL string) error {
 	// Network domain: intercept /account/login and /oauth/token responses
 	// directly. The WebChannel handshake is the primary capture path, but

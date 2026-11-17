@@ -122,51 +122,6 @@ func solveFastlyChallenge(ctx context.Context) error {
 	return fmt.Errorf("%w: %v", ErrFastlyChallenge, lastErr)
 }
 
-// SolveChallengeCookies runs the Fastly anti-bot handshake with the given
-// user agent and returns the earned cookies WITHOUT installing them in the
-// shared control-plane client. The browser capture uses this to pre-seed a
-// fresh browser profile: the in-page XHRs hit the same edge, and the
-// challenge cookie is bound to UA+IP — matching the browser's UA makes the
-// earned cookie clear the edge for the page's own requests (e.g.
-// /v1/account/login, which 406s without it).
-func SolveChallengeCookies(ctx context.Context, userAgent string) ([]*http.Cookie, error) {
-	solveMu.Lock()
-	defer solveMu.Unlock()
-
-	ctx, cancel := context.WithTimeout(ctx, solveTimeout)
-	defer cancel()
-
-	bases := []string{"https://api.accounts.firefox.com", strings.TrimRight(fxaSiteURL, "/")}
-	var lastErr error
-	for _, base := range bases {
-		jar, err := newJar()
-		if err != nil {
-			return nil, err
-		}
-		err = solveOnHostWith(ctx, base, userAgent, jar)
-		if err == nil {
-			parsed, perr := url.Parse(base + "/")
-			if perr != nil {
-				return nil, perr
-			}
-			cookies := jar.Cookies(parsed)
-			if len(cookies) == 0 {
-				lastErr = fmt.Errorf("challenge completed but no cookie issued")
-				continue
-			}
-			return cookies, nil
-		}
-		lastErr = err
-		if errors.Is(err, errNoChallengePage) {
-			continue
-		}
-	}
-	if lastErr == nil {
-		lastErr = errNoChallengePage
-	}
-	return nil, fmt.Errorf("%w: %v", ErrFastlyChallenge, lastErr)
-}
-
 // solveOnHost runs the challenge flow against one host with a throwaway client
 // and a fresh cookie jar.
 func solveOnHost(ctx context.Context, base, userAgent string) error {
