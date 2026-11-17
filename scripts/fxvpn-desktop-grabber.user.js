@@ -46,6 +46,12 @@
   // email). Giữ true: nếu IP bị Fastly CAPTCHA-lock thì đổi token TRONG APP
   // cũng vô ích — chỉ request từ browser thật mới qua được edge.
   var EXCHANGE_ON_PC = true;
+  // (Tùy chọn) Cloudflare Worker relayer — giống hệt relayer/worker.js của
+  // FoxyVPN gốc / bản grabber cho container. Khi Fastly chặn IP/ASN mạng bạn
+  // (406 dai dẳng), request đi qua egress IP của Cloudflare (trusted) sẽ
+  // pass. Deploy: dán worker.js vào Cloudflare Workers rồi dán URL vào đây.
+  // Bỏ trống = đi trực tiếp từ IP của bạn.
+  var RELAYER_URL = '';
   // ==========================================================================
 
   var SESSION_HEX = /^[0-9a-f]{64}$/;
@@ -53,6 +59,9 @@
   var SCOPE = 'profile https://identity.mozilla.com/apps/vpn';
   var PROTO = 'identity.mozilla.com/picl/v1/';
   var API = 'https://api.accounts.firefox.com/v1';
+  // Edge chỉ chấp nhận UA Firefox trên các OAuth endpoint. GM_xmlhttpRequest
+  // forward header này nguyên vẹn — kể cả khi chạy trên Chromium.
+  var FIREFOX_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0';
   var PANEL_ID = 'fxvpn-desktop-panel';
   var captured = null; // { token, email, uid, source, oauth }
 
@@ -291,6 +300,27 @@
     });
   }
 
+  // Gọi 1 endpoint FxA. Khi RELAYER_URL được cấu hình, request đi qua worker
+  // (egress IP của Cloudflare — trusted bởi Fastly). UA Firefox header luôn
+  // được set: GM forward nguyên vẹn, và edge chỉ nhìn UA.
+  function fxaFetch(method, url, headers, data) {
+    var h = { 'User-Agent': FIREFOX_UA };
+    if (headers) {
+      Object.keys(headers).forEach(function (k) {
+        h[k] = headers[k];
+      });
+    }
+    if (RELAYER_URL) {
+      return gmFetch({
+        method: method,
+        url: RELAYER_URL.replace(/\/$/, '') + '/?url=' + encodeURIComponent(url),
+        data: data,
+        headers: h,
+      });
+    }
+    return gmFetch({ method: method, url: url, data: data, headers: h });
+  }
+
   // ---- OAuth flow ngay trên máy (tùy chọn) ------------------------------------
   // Browser thật = TLS fingerprint thật → edge cho qua, không cần relayer.
   async function exchangeOnPC(token, email, attempt) {
@@ -304,24 +334,19 @@
       var state = b64url(crypto.getRandomValues(new Uint8Array(16)));
 
       setStatus('xin authorization code (lần ' + attempt + '/' + maxAttempts + ')…');
-      var r1 = await gmFetch({
-        method: 'POST',
-        url: API + '/oauth/authorization',
-        data: JSON.stringify({
-          client_id: CLIENT_ID,
-          response_type: 'code',
-          scope: SCOPE,
-          state: state,
-          access_type: 'offline',
-          code_challenge: pkce.challenge,
-          code_challenge_method: 'S256',
-        }),
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'Authorization': 'Bearer fxs_' + bearerID,
-        },
-      });
+      var r1 = await fxaFetch('POST', API + '/oauth/authorization', {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'Authorization': 'Bearer fxs_' + bearerID,
+      }, JSON.stringify({
+        client_id: CLIENT_ID,
+        response_type: 'code',
+        scope: SCOPE,
+        state: state,
+        access_type: 'offline',
+        code_challenge: pkce.challenge,
+        code_challenge_method: 'S256',
+      }));
       var t1 = String(r1.responseText || '');
       if (r1.status === 406) {
         if (attempt < maxAttempts) {
@@ -330,7 +355,7 @@
           await new Promise(function (resolve) { setTimeout(resolve, delay); });
           return exchangeOnPC(token, email, attempt + 1);
         }
-        throw new Error('Fastly chặn (406) sau ' + maxAttempts + ' lần — dùng session token dán vào app thay vì đổi trên máy.');
+        throw new Error('Fastly chặn (406) sau ' + maxAttempts + ' lần — bot-score của IP/ASN mạng bạn. Cấu hình RELAYER_URL (Cloudflare Worker) ở đầu script rồi bấm lại.');
       }
       if (r1.status === 401) {
         throw new Error('sessionToken bị từ chối (401) — session hết hạn hoặc chưa verify 2FA.');
@@ -343,17 +368,15 @@
       if (auth.state !== state) throw new Error('state mismatch');
 
       setStatus('đổi code lấy OAuth token…');
-      var r2 = await gmFetch({
-        method: 'POST',
-        url: API + '/oauth/token',
-        data: JSON.stringify({
-          client_id: CLIENT_ID,
-          grant_type: 'authorization_code',
-          code: auth.code,
-          code_verifier: pkce.verifier,
-        }),
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      });
+      var r2 = await fxaFetch('POST', API + '/oauth/token', {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      }, JSON.stringify({
+        client_id: CLIENT_ID,
+        grant_type: 'authorization_code',
+        code: auth.code,
+        code_verifier: pkce.verifier,
+      }));
       var t2 = String(r2.responseText || '');
       if (r2.status !== 200) {
         if (t2.indexOf('172') !== -1) throw new Error('code hết hạn (172) — bấm lại.');
