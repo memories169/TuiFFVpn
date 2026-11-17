@@ -4,12 +4,14 @@ name: build-docker
 # on tag pushes (v*), and on manual dispatch. PRs build without publishing.
 
 on:
+  # Manual and version-tag builds only — regular commits to main do NOT
+  # publish images. Run from the Actions tab ("Run workflow"); on PRs it
+  # builds without publishing.
+  workflow_dispatch:
   push:
-    branches: [main]
     tags: ["v*"]
   pull_request:
     branches: [main]
-  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io

@@ -573,9 +573,10 @@ const hookScript = `(function () {
   // The content server returns the sessionToken in the /account/login (and
   // /oauth/token) response body. In Chromium the WebChannel handshake can
   // stall the page flow, but the XHR still completes — sniff the body and
-  // grab the token from there. Runs in the MAIN world (injected before any
-  // page script), so the wrapper replaces the page's own XHR/fetch.
-  var OrigXHR = window.XMLHttpRequest;
+  // grab the token from there. Wraps instances (not the prototype): FxA's
+  // browser.ts patches XHR methods on the instance and a prototype-level
+  // defineProperty recursion blew the stack (RangeError: Maximum call
+  // stack size exceeded).
   function sniff(text) {
     try {
       if (!text || typeof text !== 'string' || text.length > 100000) return;
@@ -585,25 +586,21 @@ const hookScript = `(function () {
       emit(tok, 'xhr:' + (body.grant_type || 'login'), body);
     } catch (e) { /* not JSON or not a login response — ignore */ }
   }
-  if (OrigXHR) {
-    function PatchedXHR() { return new OrigXHR(); }
-    PatchedXHR.prototype = OrigXHR.prototype;
-    ['onreadystatechange', 'addEventListener', 'open', 'send'].forEach(function (m) {
-      Object.defineProperty(PatchedXHR.prototype, m, {
-        get: function () { return OrigXHR.prototype[m]; },
-        set: function (fn) {
-          if (m === 'onreadystatechange') {
-            OrigXHR.prototype[m] = function () {
-              try {
-                if (this.readyState === 4 && this.responseText) sniff(this.responseText);
-              } catch (e) {}
-              return fn.apply(this, arguments);
-            };
-          } else { OrigXHR.prototype[m] = fn; }
-        }
-      });
+  if (window.XMLHttpRequest) {
+    var RealXHR = window.XMLHttpRequest;
+    var sniffOnLoad = function () {
+      try { if (this.readyState === 4 && this.responseText) sniff(this.responseText); } catch (e) {}
+    };
+    window.XMLHttpRequest = function () {
+      var xhr = new RealXHR();
+      xhr.addEventListener('load', sniffOnLoad);
+      return xhr;
+    };
+    window.XMLHttpRequest.prototype = RealXHR.prototype;
+    // Keep statics like UNSENT/DONE intact on the wrapper.
+    ['UNSENT', 'OPENED', 'HEADERS_RECEIVED', 'LOADING', 'DONE'].forEach(function (k) {
+      try { window.XMLHttpRequest[k] = RealXHR[k]; } catch (e) {}
     });
-    window.XMLHttpRequest = PatchedXHR;
   }
   var origFetch = window.fetch;
   if (origFetch) {
@@ -673,6 +670,9 @@ const hookScript = `(function () {
       // real Firefox desktop browser. An empty capabilities object made the
       // trusted fx_desktop_v3 flow stall at the email step (button greys
       // out waiting for a can_link_account reply it then never trusts).
+      // NB: the console log "fxa_status timed out" still appears when the
+      // reply is ignored — the XHR sniffer below is what makes capture
+      // work regardless of this handshake's fate.
       reply(id, messageId, command, {
         capabilities: {
           authorized_streams: ['profiles', 'assertions', 'passpairs'],
@@ -683,8 +683,7 @@ const hookScript = `(function () {
         clientId: ''
       });
       return;
-    }
-    if (command === 'fxaccounts:can_link_account') {
+    }    if (command === 'fxaccounts:can_link_account') {
       reply(id, messageId, command, { ok: true });
       return;
     }

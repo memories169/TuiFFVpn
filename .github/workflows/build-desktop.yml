@@ -1,26 +1,27 @@
 name: build-desktop
 
 # Build the native desktop app (fxvpn-desktop) for Linux, Windows and macOS
-# on every push to main, on version tags, and on manual dispatch. Binaries
-# are attached to GitHub Releases for tag builds; main builds produce
-# download artifacts.
+# — MANUAL ONLY: run it from the Actions tab ("Run workflow") or by pushing
+# a version tag (v*). Regular commits to main do NOT trigger builds.
 #
 # Jobs:
 #   linux-amd64 / linux-arm64 — native builds on Ubuntu runners (glibc
 #                                2.35 baseline), plus a linuxdeploy AppImage
-#   windows-amd64             — pure-Go cross-ish build: Gio's Windows
-#                               backend needs no cgo, built with nometal
+#   windows-amd64             — pure-Go build: Gio's Windows backend needs
+#                               no cgo, built with nometal
 #   darwin (amd64+arm64)      — MUST run on macOS runners: the Metal GL
 #                               backend is cgo against Apple frameworks, so
 #                               it cannot be cross-compiled from Linux
 
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      build_appimage:
+        description: "Also build the Linux AppImage"
+        type: boolean
+        default: true
+  push:
+    tags: ["v*"]
 
 permissions:
   contents: write # release upload for tag builds
@@ -91,6 +92,7 @@ jobs:
     name: appimage-amd64
     runs-on: ubuntu-22.04
     needs: linux
+    if: github.event_name == 'push' || inputs.build_appimage
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -276,10 +278,11 @@ jobs:
 
   release:
     # Attach all binaries to the GitHub Release for tag builds (v*).
+    # The AppImage (skippable job) is included when it ran.
     name: release
     runs-on: ubuntu-latest
-    needs: [linux, appimage, windows, macos]
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows, macos]
+    if: ${{ !cancelled() && needs.linux.result == 'success' && needs.windows.result == 'success' && needs.macos.result == 'success' }}
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
