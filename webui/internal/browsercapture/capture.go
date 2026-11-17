@@ -913,6 +913,8 @@ func waitForToken(ctx context.Context, page *Page, opts Options) (*Result, error
 	}
 
 	accept := func(ctx context.Context, token, email, uid, source string) (*Result, bool) {
+		trusted := strings.HasPrefix(source, "webchannel:fxaccounts:login") ||
+			strings.HasPrefix(source, "webchannel:fxaccounts:oauth_login")
 		token = strings.ToLower(strings.TrimSpace(token))
 		if !IsSessionToken(token) || tried[token] {
 			return nil, false
@@ -934,6 +936,20 @@ func waitForToken(ctx context.Context, page *Page, opts Options) (*Result, error
 			case errors.Is(err, fxa.ErrInvalidSessionToken):
 				// FxA itself said the token is bad — discard for good.
 				opts.Logf("token rejected by FxA: %v", err)
+				return nil, false
+			case errors.Is(err, fxa.ErrFastlyChallenge):
+				// The edge is blocking the validation CALL, not the token.
+				// A fxaccounts:login delivery is FxA's own post-completion
+				// signal (only emitted after the whole flow incl. 2FA
+				// succeeded) — trust it rather than parking while the page
+				// is showing its error UI. XHR-sniffed tokens can be
+				// pre-2FA, so those stay parked for revalidation.
+				if trusted {
+					opts.Logf("edge blocked validation (%v) — accepting trusted %s delivery", err, source)
+					return finish(token, email, uid, source), true
+				}
+				opts.Logf("edge blocked validation (%v) — parking token, will re-check", err)
+				pendingToken, pendingEmail, pendingUID, pendingSource = token, email, uid, source
 				return nil, false
 			default:
 				// Edge/network trouble — park the candidate and keep the
