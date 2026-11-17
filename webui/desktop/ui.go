@@ -100,9 +100,12 @@ type UI struct {
 	browserBusy    bool
 	browserCancel  context.CancelFunc
 	browserLog     string
-	accMsg         string
-	accMsgErr      bool
-	accMsgMu       sync.Mutex
+	// copyToken, when non-empty, is written to the clipboard on the next
+	// frame (clipboard writes must happen inside a layout pass).
+	copyToken string
+	accMsg    string
+	accMsgErr bool
+	accMsgMu  sync.Mutex
 
 	// locations tab
 	refreshLocs  widget.Clickable
@@ -348,12 +351,20 @@ func (u *UI) startBrowserLogin() {
 			case err != nil:
 				var exch errExchange
 				if errors.As(err, &exch) {
-					// Sign-in worked; only the token exchange failed. The
-					// session token is in the message — the user can retry
-					// the exchange via the manual token form.
-					u.accMsg = "Đăng nhập thành công nhưng đổi token thất bại: " + exch.Error() +
-						" — dán session token trên vào ô Session token bên dưới rồi bấm Đăng nhập."
+					// Sign-in worked; only the token exchange failed. Put
+					// the session token where the user can actually copy
+					// it: into the browser log box (which has a Copy log
+					// button) AND auto-copied to the clipboard on the next
+					// frame via copyToken pending.
+					u.accMsg = "Đăng nhập thành công nhưng đổi token thất bại: " + exch.err.Error() +
+						" — session token đã được copy vào clipboard (và hiện trong khung log), dán vào ô Session token bên dưới rồi bấm Đăng nhập."
 					u.accMsgErr = true
+					lines := strings.Split(u.browserLog, "\n")
+					if u.browserLog == "" {
+						lines = []string{"Session token:"}
+					}
+					u.browserLog = strings.Join(append(lines, exch.sessionToken), "\n")
+					u.copyToken = exch.sessionToken
 				} else {
 					u.accMsg = "Đăng nhập qua trình duyệt thất bại: " + err.Error() +
 						" — cần Chrome/Chromium trên máy (FXVPN_BROWSER để chỉ đường dẫn). Có thể dán token thủ công bên dưới."
@@ -833,9 +844,19 @@ func (u *UI) layoutAccounts(gtx layout.Context) layout.Dimensions {
 				)
 			}),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				// Browser sign-in progress (only while it runs).
-				if !u.browserBusy || u.browserLog == "" {
+				// Browser sign-in progress (only while it runs — or when a
+				// captured session token is waiting to be copied).
+				if (!u.browserBusy || u.browserLog == "") && u.copyToken == "" {
 					return layout.Dimensions{}
+				}
+				// Auto-copy the captured session token once, then clear it
+				// (clipboard writes are only legal inside a layout pass).
+				if u.copyToken != "" {
+					gtx.Execute(clipboard.WriteCmd{
+						Type: "application/text",
+						Data: io.NopCloser(strings.NewReader(u.copyToken)),
+					})
+					u.copyToken = ""
 				}
 				return widget.Border{
 					Color:        Sky,
