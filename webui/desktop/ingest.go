@@ -42,6 +42,12 @@ type ingestRequest struct {
 	ExpiresIn    int    `json:"expires_in"`
 	Scope        string `json:"scope"`
 	SessionToken string `json:"session_token"`
+	// Proxy pass fetched by the userscript in the trusted browser (the
+	// edge 406s every Go-side fetch from a flagged network). When present
+	// it becomes the live pass and the tunnel restarts with it.
+	ProxyPass string `json:"proxy_pass"`
+	QuotaMax  string `json:"quota_max"`
+	QuotaLeft string `json:"quota_left"`
 }
 
 // ingestKey returns the configured key, or a freshly generated one when
@@ -90,6 +96,14 @@ func (e *Engine) ingestServer(addr string) {
 		if err := e.AddAccountWithTokens(req.Email, req.AccessToken, req.RefreshToken, req.ExpiresIn); err != nil {
 			writeIngestJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
+		}
+		// Proxy pass pushed too? Store it as the live pass — no Guardian
+		// call from Go. The dialer renews later from Go when it can (or
+		// the userscript pushes a fresh pass again).
+		if req.ProxyPass != "" {
+			if perr := e.SetIngestedPass(req.Email, req.ProxyPass, req.QuotaMax, req.QuotaLeft); perr != nil {
+				log.Printf("desktop: ingested pass rejected: %v", perr)
+			}
 		}
 		log.Printf("desktop: ingested OAuth tokens for %s (PC browser)", req.Email)
 		writeIngestJSON(w, http.StatusOK, map[string]any{"ok": true, "stored": "oauth", "email": req.Email})

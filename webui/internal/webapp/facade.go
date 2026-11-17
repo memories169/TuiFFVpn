@@ -21,9 +21,12 @@ package webapp
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
+
+	"fxsocks/webui/internal/guardian"
 )
 
 // requestWithContext builds the bare *http.Request the internal pass-fetch
@@ -230,6 +233,48 @@ func (e errString) Error() string { return string(e) }
 
 const errNoAccount = errString("account không tồn tại")
 
+// SetIngestedPass stores a proxy pass fetched by the PC userscript in the
+// user's trusted browser (the Go-side fetch from this machine is being
+// 406'd by the edge). If a server is selected, the proxy (re)starts with
+// the pushed pass immediately — no Guardian call from Go. Quota headers
+// ride along for the account display.
+func (a *App) SetIngestedPass(email, rawPass, quotaMax, quotaLeft string) error {
+	pass, err := guardian.NewProxyPassFromRaw(rawPass, quotaMax, quotaLeft, "")
+	if err != nil {
+		return fmt.Errorf("ingested pass: %w", err)
+	}
+	a.mu.Lock()
+	if ac := a.Store.FindAccount(email); ac != nil {
+		ac.QuotaMax = quotaMax
+		ac.QuotaLeft = quotaLeft
+		ac.CheckedAt = time.Now()
+		ac.ProbeError = ""
+	}
+	a.currentPass = pass.RawToken
+	a.ingested = &ingestedPass{rawToken: pass.RawToken, expiry: pass.ExpiresAt()}
+	sel := a.Store.Selected
+	a.mu.Unlock()
+	if err := a.Store.Save(); err != nil {
+		return err
+	}
+	// A selected server + running flow: restart with the fresh pass. No
+	// token refresh, no pass fetch — everything came from the browser.
+	if sel.ServerHost != "" && sel.ServerPort != 0 {
+		a.mu.Lock()
+		active := a.Store.ActiveAccount()
+		var email string
+		if active != nil {
+			email = active.Email
+		}
+		a.mu.Unlock()
+		if email != "" {
+			a.startProxy(sel.ServerHost, sel.ServerPort, pass.Bearer(), pass.ExpiresAt())
+		}
+	}
+	log.Printf("webui: ingested proxy pass for %s (PC browser)", email)
+	return nil
+}
+
 // StartRefreshAll kicks the manual refresh-all pass; false when one runs.
 func (a *App) StartRefreshAll() bool {
 	if !a.refreshAll.tryStart() {
@@ -262,6 +307,14 @@ type proxyPassCopy struct {
 	ExpiresAt time.Time
 }
 
+// ingestedPass tracks a proxy pass pushed by the PC userscript (the Go
+// fetch is edge-blocked), so Connect can fall back to it instead of
+// failing while the edge is hostile to the Go client.
+type ingestedPass struct {
+	rawToken string
+	expiry   time.Time
+}
+
 // SelectAndStart is the /api/select path minus JSON: persist selection, fetch
 // a pass (refreshing the token once if rejected), restart the proxy.
 func (a *App) SelectAndStart(ctx context.Context, countryCode, countryName, cityCode, cityName, host string, port int) error {
@@ -283,10 +336,28 @@ func (a *App) SelectAndStart(ctx context.Context, countryCode, countryName, city
 
 	pass, err := a.fetchProxyPassWithRefresh(requestWithContext(ctx), token)
 	if err != nil {
+		// The Go-side fetch is edge-blocked (406 family). A pass pushed by
+		// the PC userscript (fetched in the trusted browser) may still be
+		// live — use it rather than failing outright.
 		a.mu.Lock()
-		a.lastErr = err.Error()
+		ip := a.ingested
 		a.mu.Unlock()
-		return err
+		if ip != nil && ip.rawToken != "" && time.Now().Before(ip.expiry.Add(-time.Minute)) {
+			log.Printf("webui: pass fetch edge-blocked (%v) — using the ingested pass until %s", err, ip.expiry.Format("15:04:05"))
+			var perr error
+			pass, perr = guardian.NewProxyPassFromRaw(ip.rawToken, "", "", "")
+			if perr != nil {
+				a.mu.Lock()
+				a.lastErr = err.Error()
+				a.mu.Unlock()
+				return err
+			}
+		} else {
+			a.mu.Lock()
+			a.lastErr = err.Error()
+			a.mu.Unlock()
+			return err
+		}
 	}
 	a.mu.Lock()
 	a.lastErr = ""

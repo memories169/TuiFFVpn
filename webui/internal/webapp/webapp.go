@@ -44,6 +44,9 @@ type App struct {
 
 	proxySrv *proxy.Server
 	pass     *guardian.ProxyPass
+	// ingested holds a proxy pass pushed by the PC userscript (edge-blocked
+	// networks) — Connect falls back to it when the Go fetch 406s.
+	ingested *ingestedPass
 	lastErr  string
 	// currentPass is the live proxy pass JWT of the running proxy. The
 	// dialer's bearerProvider reads it after refreshing through Guardian.

@@ -28,10 +28,11 @@
  * nó chạy trong TRÌNH DUYỆT THẬT của bạn: TLS fingerprint thật, cookies thật,
  * IP quen thuộc — edge cho qua.
  *
- * Flow GIỐNG HỆT bản docker: bắt token trong browser thật → đổi OAuth ngay
- * trên máy (edge cho qua) → TỰ ĐẨY vào app desktop qua localhost ingest
- * (127.0.0.1:9091) → account xuất hiện trong app. Copy clipboard vẫn giữ
- * làm backup.
+ * Flow GIỐNG HỆT bản docker (và hơn): bắt token trong browser thật → đổi
+ * OAuth ngay trên máy → LẤY CẢ PROXY PASS (/fpn/token + /activate) trong
+ * browser → đẩy cả bộ vào app desktop qua localhost ingest (9091) →
+ * bấm chọn server trong app là chạy, KHÔNG có call Go nào tới FxA/Guardian
+ * để edge chặn. Copy clipboard vẫn giữ làm backup.
  *
  * KHÔNG dùng chung với bản container: script này không POST token đi đâu cả
  * (bản container đẩy token vào máy chủ qua HTTP; bản này copy token để dán
@@ -68,6 +69,7 @@
   var SCOPE = 'profile https://identity.mozilla.com/apps/vpn';
   var PROTO = 'identity.mozilla.com/picl/v1/';
   var API = 'https://api.accounts.firefox.com/v1';
+  var GUARDIAN = 'https://vpn.mozilla.org';
   // Edge chỉ chấp nhận UA Firefox trên các OAuth endpoint. GM_xmlhttpRequest
   // forward header này nguyên vẹn — kể cả khi chạy trên Chromium.
   var FIREFOX_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0';
@@ -269,6 +271,72 @@
     else setStatus('bắt được sessionToken — bấm “Đổi token trên máy”.');
   }
 
+  // ---- Proxy pass ngay trong browser ------------------------------------------
+  // Go-side fetches are 406'd; từ browser thật edge cho qua. Lấy pass JWT
+  // (+quota headers) rồi đẩy cả bộ vào app — app không cần gọi Guardian.
+  async function fetchProxyPass(accessToken, email, sessionToken, tok, attempt) {
+    attempt = attempt || 1;
+    var maxAttempts = 4;
+    try {
+      setStatus('lấy proxy pass (lần ' + attempt + '/' + maxAttempts + ')…');
+      var r = await fxaFetch('GET', GUARDIAN + '/api/v1/fpn/token', {
+        'Authorization': 'Bearer ' + accessToken,
+        'Accept': 'application/json',
+      });
+      if (r.status === 406 && attempt < maxAttempts) {
+        var delay = attempt * 8000;
+        setStatus('<b style="color:#f59e0b">Fastly chặn pass (406)</b> — thử lại sau ' + (delay / 1000) + 's…');
+        await new Promise(function (resolve) { setTimeout(resolve, delay); });
+        return fetchProxyPass(accessToken, email, sessionToken, tok, attempt + 1);
+      }
+      var pass = null, qmax = '', qleft = '';
+      if (r.status === 200) {
+        var body = {};
+        try { body = JSON.parse(r.responseText || '{}'); } catch (e) {}
+        if (body.token) {
+          pass = body.token;
+          qmax = r.responseHeaders.match(/x-quota-limit:\s*([^\r\n]+)/i) ? RegExp.$1.trim() : '';
+          qleft = r.responseHeaders.match(/x-quota-remaining:\s*([^\r\n]+)/i) ? RegExp.$1.trim() : '';
+        }
+      }
+      if (!pass && (r.status === 401 || r.status === 403)) {
+        // Chưa entitlement → activate (free tier) rồi thử lại một lần.
+        setStatus('account chưa kích hoạt VPN — gọi /activate…');
+        var ra = await fxaFetch('POST', GUARDIAN + '/api/v1/fpn/activate', {
+          'Authorization': 'Bearer ' + accessToken,
+          'Accept': 'application/json',
+        });
+        if (ra.status === 200 || ra.status === 201) {
+          return fetchProxyPass(accessToken, email, sessionToken, tok, 1);
+        }
+        setStatus('<b style="color:#f59e0b">activate HTTP ' + ra.status + '</b> — vẫn đẩy token vào app; pass sẽ lấy lại khi edge thoáng.');
+      }
+      if (pass) {
+        setStatus('<b style="color:#8fffb0">đã có proxy pass ✓</b>' + (email ? ' — ' + esc(email) : '') +
+          '<br>đang đẩy bộ token + pass vào app desktop…');
+      } else {
+        setStatus('không lấy được pass (' + r.status + ') — đẩy token vào app; pass sẽ tự lấy lại khi edge thoáng.');
+      }
+      pushToApp({
+        email: email,
+        access_token: tok.access_token,
+        refresh_token: tok.refresh_token || '',
+        expires_in: tok.expires_in || 0,
+        proxy_pass: pass || '',
+        quota_max: qmax,
+        quota_left: qleft,
+      });
+    } catch (err) {
+      setStatus('<b style="color:#ff6b6b">lỗi lấy pass:</b> ' + esc(String(err.message || err)) + ' — đẩy token trước.');
+      pushToApp({
+        email: email,
+        access_token: tok.access_token,
+        refresh_token: tok.refresh_token || '',
+        expires_in: tok.expires_in || 0,
+      });
+    }
+  }
+
   // ---- Đẩy vào app desktop (localhost ingest) ---------------------------------
   function pushToApp(payload) {
     setStatus('đang gửi vào app desktop…');
@@ -426,9 +494,8 @@
       captured.oauth = tok;
       var pair = email + '\n' + tok.access_token + '\n' + (tok.refresh_token || '');
       copyText(pair);
-      setStatus('<b style="color:#8fffb0">đã đổi OAuth ✓ — ĐÃ COPY vào clipboard</b>' +
-        (email ? ' — ' + esc(email) : '') +
-        '<br>đang đẩy tự động vào app desktop…');
+      setStatus('<b style="color:#8fffb0">đã đổi OAuth ✓</b>' + (email ? ' — ' + esc(email) : '') +
+        '<br>đang lấy proxy pass (trong browser — edge cho qua)…');
       setOutput({
         email: email,
         access_token: tok.access_token,
@@ -436,12 +503,7 @@
         expires_in: tok.expires_in || 0,
         session_token: token,
       });
-      pushToApp({
-        email: email,
-        access_token: tok.access_token,
-        refresh_token: tok.refresh_token || '',
-        expires_in: tok.expires_in || 0,
-      });
+      fetchProxyPass(tok.access_token, email, token, tok, 1);
     } catch (err) {
       setStatus('<b style="color:#ff6b6b">lỗi đổi token:</b> ' + esc(String(err.message || err)));
     }

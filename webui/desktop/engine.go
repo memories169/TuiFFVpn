@@ -257,6 +257,13 @@ func (e *Engine) AddAccountWithTokens(email, access, refresh string, expiresIn i
 	return nil
 }
 
+// SetIngestedPass stores a proxy pass pushed by the PC userscript (fetched
+// in the trusted browser) and restarts the proxy on the selected server
+// with it — bypassing every Go-side edge call.
+func (e *Engine) SetIngestedPass(email, rawPass, quotaMax, quotaLeft string) error {
+	return e.app.SetIngestedPass(email, rawPass, quotaMax, quotaLeft)
+}
+
 // DeleteAccount removes an account (stops the proxy if it runs on it).
 func (e *Engine) DeleteAccount(email string) error {
 	return e.app.DeleteAccount(email)

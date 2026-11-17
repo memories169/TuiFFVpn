@@ -210,6 +210,25 @@ func (c *Client) FetchProxyPass(ctx context.Context) (*ProxyPass, error) {
 	}, nil
 }
 
+// NewProxyPassFromRaw parses an already-fetched proxy-pass JWT (e.g.
+// pushed by the PC userscript from the trusted browser) into a ProxyPass.
+// quota fields come from the response headers the fetcher saw.
+func NewProxyPassFromRaw(rawToken string, quotaMax, quotaLeft, quotaReset string) (*ProxyPass, error) {
+	claims, err := parseJWT(rawToken)
+	if err != nil {
+		return nil, err
+	}
+	return &ProxyPass{
+		RawToken:   rawToken,
+		Sub:        claims.Sub,
+		Exp:        claims.Exp,
+		Nbf:        claims.Nbf,
+		QuotaMax:   quotaMax,
+		QuotaLeft:  quotaLeft,
+		QuotaReset: quotaReset,
+	}, nil
+}
+
 // FetchUserInfo returns the account entitlement.
 func (c *Client) FetchUserInfo(ctx context.Context) (*Entitlement, error) {
 	body, status, err := c.do(ctx, http.MethodGet, "/api/v1/fpn/status")
