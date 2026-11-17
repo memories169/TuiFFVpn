@@ -548,6 +548,12 @@ const hookScript = `(function () {
   window.__fxvpnHooked = true;
   var SESSION_HEX = /^[0-9a-f]{64}$/;
   var CHANNEL = 'account_updates';
+  var LOG = '[fxvpn ' + new Date().toISOString() + ' url=' + location.href + ']';
+
+  function dbg(msg, obj) {
+    try { console.log(LOG + ' ' + msg, obj === undefined ? '' : obj); } catch (e) {}
+  }
+  dbg('hook installed (build f07f0c6+)');
 
   function emit(token, command, data) {
     token = String(token || '').trim().toLowerCase();
@@ -639,6 +645,7 @@ const hookScript = `(function () {
     var message = parsed.message;
     var command = String(message.command);
     var data = message.data || message.params || {};
+    dbg('WebChannel event: ' + command, { messageId: message.messageId, keys: Object.keys(data || {}) });
     var token = data.sessionToken || data.token || '';
     if (token) {
       emit(token, command, data);
@@ -685,6 +692,7 @@ const hookScript = `(function () {
       __fxvpnReply: true,
       message: { messageId: messageId, command: command, data: data }
     };
+    dbg('reply -> ' + command, data);
     try { window.dispatchEvent(new CustomEvent('WebChannelMessageToContent', { detail: detail })); } catch (e) {}
     try { document.dispatchEvent(new CustomEvent('WebChannelMessageToContent', { detail: detail })); } catch (e) {}
   }
