@@ -16,6 +16,8 @@ package browsercapture
 
 import (
 	"context"
+	crand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,10 +31,46 @@ import (
 	"time"
 )
 
-// DefaultLoginURL is the Firefox Accounts page FoxyVPN loads. The
-// fx_desktop_v3 context makes the page treat the browser as Firefox and emit
-// the fxaccounts:login WebChannel message that carries the sessionToken.
-const DefaultLoginURL = "https://accounts.firefox.com/?context=fx_desktop_v3&service=sync&action=email"
+// DefaultLoginURL is the Firefox Accounts page FoxyVPN loads: the REAL
+// OAuth flow with the engine's client id (oauth_webchannel_v1 context
+// makes the page talk WebChannel to the "browser" — our hook — and
+// deliver an authorization code via fxaccounts:oauth_login at the end).
+// The earlier fx_desktop_v3&service=sync entry was wrong for a
+// non-Firefox browser: the page bounced itself to an OAuth URL it built
+// from undefined variables (client_id=undefined...), which 400s the
+// integration right after 2FA with "clientId ... isHexadecimal".
+const DefaultLoginURL = "https://accounts.firefox.com/oauth/" +
+	"?client_id=" + OAuthClientID +
+	"&state=" + OAuthState +
+	"&scope=" + OAuthURLEncodedScope +
+	"&access_type=offline" +
+	"&response_type=code" +
+	"&context=oauth_webchannel_v1" +
+	"&entrypoint=fxa_pairflow"
+
+// OAuthClientID / OAuthState / OAuthURLEncodedScope are placeholders
+// rewritten when the page is opened (see loginURL()).
+const (
+	OAuthClientID        = "__OAUTH_CLIENT_ID__"
+	OAuthState           = "__OAUTH_STATE__"
+	OAuthURLEncodedScope = "profile%20https%3A%2F%2Fidentity.mozilla.com%2Fapps%2Fvpn"
+)
+
+// loginURL builds the actual entry URL: the state placeholder becomes a
+// fresh random value per run so the code can be tied to this capture.
+func loginURL(state string) string {
+	return strings.ReplaceAll(DefaultLoginURL, OAuthState, state)
+}
+
+// randomHex returns n random bytes, hex-encoded.
+func randomHex(n int) string {
+	buf := make([]byte, n)
+	if _, err := crand.Read(buf); err != nil {
+		// Crypto/rand failing is unrecoverable for a secure state value.
+		panic("crypto/rand unavailable: " + err.Error())
+	}
+	return hex.EncodeToString(buf)
+}
 
 // HookBinding is the JS binding name the injected hook calls with the token.
 const HookBinding = "__fxvpnSession"
@@ -83,6 +121,11 @@ type Result struct {
 	Source       string   `json:"source"`
 	UserAgent    string   `json:"-"`
 	Cookies      []Cookie `json:"-"`
+	// OAuthCode is set when the page delivered an fxaccounts:oauth_login
+	// (the oauth_webchannel_v1 flow) instead of a raw sessionToken. The
+	// caller exchanges it for OAuth tokens via the token endpoint.
+	OAuthCode  string `json:"oauth_code,omitempty"`
+	OAuthState string `json:"oauth_state,omitempty"`
 }
 
 // ValidateFunc verifies a captured token. cookies and userAgent are the
@@ -109,14 +152,17 @@ func IsSessionToken(s string) bool {
 }
 
 // Capture launches (or attaches to) a browser, hooks the FxA WebChannel and
-// waits for a sessionToken. The returned browser handle lets the caller keep
-// the window open so a human can type credentials.
+// waits for a sessionToken or an OAuth authorization code. The returned
+// browser handle lets the caller keep the window open so a human can type
+// credentials.
 func Capture(ctx context.Context, opts Options) (*Result, *Browser, error) {
 	if opts.Logf == nil {
 		opts.Logf = func(string, ...any) {}
 	}
 	if opts.LoginURL == "" {
-		opts.LoginURL = DefaultLoginURL
+		// Fresh state per run: the OAuth code is tied to it, so a code can
+		// only be exchanged by the capture that started this browser.
+		opts.LoginURL = loginURL(randomHex(16))
 	}
 	if opts.Timeout <= 0 {
 		opts.Timeout = 10 * time.Minute
@@ -514,14 +560,22 @@ func (p *Page) evaluate(ctx context.Context, expression string) (json.RawMessage
 // still empty while the page is loading.
 const pollScript = `(() => {
   try {
-    const out = { token: '', email: '', uid: '', source: '' };
-    if (window.__fxvpnCapture && window.__fxvpnCapture.token) {
-      out.token = window.__fxvpnCapture.token;
-      out.email = window.__fxvpnCapture.email || '';
-      out.uid = window.__fxvpnCapture.uid || '';
-      out.source = window.__fxvpnCapture.source || 'webchannel';
+    const out = { token: '', email: '', uid: '', source: '', oauthCode: '', oauthState: '' };
+    if (window.__fxvpnCapture) {
+      const c = window.__fxvpnCapture;
+      if (c.token) {
+        out.token = c.token;
+        out.email = c.email || '';
+        out.uid = c.uid || '';
+        out.source = c.source || 'webchannel';
+      } else if (c.oauthCode) {
+        out.oauthCode = c.oauthCode;
+        out.oauthState = c.oauthState || '';
+        out.email = c.email || '';
+        out.source = c.source || 'webchannel';
+      }
     }
-    if (!out.token) {
+    if (!out.token && !out.oauthCode) {
       const accounts = JSON.parse(localStorage.getItem('__fxa_storage.accounts') || '{}');
       const uid = localStorage.getItem('__fxa_storage.currentAccountUid');
       const rawUid = uid ? JSON.parse(uid) : '';
@@ -535,7 +589,7 @@ const pollScript = `(() => {
     }
     return out;
   } catch (e) {
-    return { token: '', email: '', uid: '', source: '' };
+    return { token: '', email: '', uid: '', source: '', oauthCode: '', oauthState: '' };
   }
 })()`
 
@@ -573,6 +627,29 @@ const hookScript = `(function () {
     };
     try { if (window.__fxvpnSession) window.__fxvpnSession(JSON.stringify(info)); } catch (e) {}
     try { console.log('[fxvpn] sessionToken captured via ' + command); } catch (e) {}
+  }
+
+  // emitOAuthCode captures the authorization code delivered by the
+  // oauth_webchannel_v1 flow (fxaccounts:oauth_login carries { code,
+  // state }). The caller exchanges the code for OAuth tokens.
+  function emitOAuthCode(command, data) {
+    var code = String((data && data.code) || '').trim();
+    if (!/^[A-Za-z0-9_-]{20,}$/.test(code)) return;
+    var info = {
+      code: code,
+      state: (data && data.state) || '',
+      email: (data && data.email) || '',
+      command: command
+    };
+    window.__fxvpnCapture = {
+      oauthCode: code,
+      oauthState: info.state,
+      email: info.email,
+      source: 'webchannel:' + command,
+      at: Date.now()
+    };
+    try { if (window.__fxvpnSession) window.__fxvpnSession(JSON.stringify(info)); } catch (e) {}
+    try { console.log('[fxvpn] oauth code captured via ' + command); } catch (e) {}
   }
 
   // --- XHR/fetch sniffer -------------------------------------------------
@@ -649,6 +726,12 @@ const hookScript = `(function () {
     var token = data.sessionToken || data.token || '';
     if (token) {
       emit(token, command, data);
+      return;
+    }
+    // OAuth native flow: the oauth_webchannel_v1 page delivers the
+    // authorization code here at sign-in completion.
+    if (command === 'fxaccounts:oauth_login') {
+      emitOAuthCode(command, data);
       return;
     }
     // The page asks the browser questions on the ToChrome channel — this
@@ -769,8 +852,24 @@ func waitForToken(ctx context.Context, page *Page, opts Options) (*Result, error
 				UID     string `json:"uid"`
 				Source  string `json:"source"`
 				Command string `json:"command"`
+				// OAuth code fields (fxaccounts:oauth_login delivery).
+				OAuthCode  string `json:"code"`
+				OAuthState string `json:"state"`
 			}
 			payload := ev.Payload
+			if err := json.Unmarshal([]byte(payload), &info); err == nil && info.OAuthCode != "" {
+				source := info.Source
+				if source == "" {
+					source = "webchannel:" + info.Command
+				}
+				opts.Logf("captured OAuth authorization code (%s)", source)
+				return &Result{
+					OAuthCode:  info.OAuthCode,
+					OAuthState: info.OAuthState,
+					Email:      info.Email,
+					Source:     source,
+				}, nil
+			}
 			if err := json.Unmarshal([]byte(payload), &info); err == nil && info.Token != "" {
 				source := info.Source
 				if source == "" {
@@ -790,13 +889,24 @@ func waitForToken(ctx context.Context, page *Page, opts Options) (*Result, error
 				continue
 			}
 			var st struct {
-				Token  string `json:"token"`
-				Email  string `json:"email"`
-				UID    string `json:"uid"`
-				Source string `json:"source"`
+				Token      string `json:"token"`
+				Email      string `json:"email"`
+				UID        string `json:"uid"`
+				Source     string `json:"source"`
+				OAuthCode  string `json:"oauthCode"`
+				OAuthState string `json:"oauthState"`
 			}
 			if err := json.Unmarshal(raw, &st); err != nil {
 				continue
+			}
+			if st.OAuthCode != "" {
+				opts.Logf("captured OAuth authorization code (%s)", st.Source)
+				return &Result{
+					OAuthCode:  st.OAuthCode,
+					OAuthState: st.OAuthState,
+					Email:      st.Email,
+					Source:     st.Source,
+				}, nil
 			}
 			if res, ok := accept(ctx, st.Token, st.Email, st.UID, st.Source); ok {
 				return res, nil

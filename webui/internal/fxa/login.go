@@ -145,6 +145,32 @@ func RefreshToken(ctx context.Context, refreshToken string) (*TokenResponse, err
 	return &t, nil
 }
 
+// ExchangeAuthorizationCode trades an OAuth authorization code (delivered
+// by the oauth_webchannel_v1 browser flow) for OAuth tokens. The code was
+// minted for ClientID with the same scope, so the exchange needs no secret
+// (public client).
+func ExchangeAuthorizationCode(ctx context.Context, code string) (*TokenResponse, error) {
+	body := map[string]any{
+		"client_id":  ClientID,
+		"grant_type": "authorization_code",
+		"code":       code,
+		"scope":      OAuthScope,
+	}
+	// Same browser-UA rationale as RefreshToken.
+	data, status, err := postJSONUA(ctx, AuthServer+"/oauth/token", body, DefaultBrowserUA)
+	if err != nil {
+		return nil, err
+	}
+	if status != 200 {
+		return nil, fmt.Errorf("code exchange failed (HTTP %d): %s", status, truncate(data))
+	}
+	var t TokenResponse
+	if err := json.Unmarshal(data, &t); err != nil {
+		return nil, fmt.Errorf("parse code exchange: %w", err)
+	}
+	return &t, nil
+}
+
 func truncate(b []byte) string {
 	s := strings.TrimSpace(string(b))
 	if len(s) > 200 {

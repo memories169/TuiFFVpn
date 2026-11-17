@@ -75,6 +75,26 @@ func (e *Engine) BrowserLogin(ctx context.Context, onLog func(string)) (*LoginOu
 		return nil, err
 	}
 
+	// OAuth code path (oauth_webchannel_v1): the page hands us an
+	// authorization code; exchange it for the tokens directly. This is the
+	// flow that works in Chromium — no session token juggling.
+	if res.OAuthCode != "" {
+		logf("Đã nhận mã ủy quyền OAuth (" + res.Source + ") — đang đổi sang token…")
+		tok, err := fxa.ExchangeAuthorizationCode(ctx, res.OAuthCode)
+		if err != nil {
+			logf("Đổi mã thất bại: " + err.Error())
+			return nil, err
+		}
+		email := res.Email
+		logf("Đăng nhập thành công" + emailSuffix(email))
+		return &LoginOutcome{
+			Email:        email,
+			AccessToken:  tok.AccessToken,
+			RefreshToken: tok.RefreshToken,
+			ExpiresIn:    tok.ExpiresIn,
+		}, nil
+	}
+
 	logf("Đã bắt được session token (" + res.Source + ") — đang đổi sang OAuth…")
 	opts := fxa.TokenOptions{
 		Cookies:   browsercapture.HTTPCookies(res.Cookies),
