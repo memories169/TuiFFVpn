@@ -779,92 +779,103 @@ func (u *UI) accountRow(gtx layout.Context, i int) layout.Dimensions {
 	if row.Active {
 		bg = withAlpha(Green, 30)
 	}
-	return layout.Inset{Bottom: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-		background(gtx, bg)
-		return layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							t := material.Body1(u.th(), row.Email)
-							t.Color = Text
-							t.TextSize = unit.Sp(14)
-							return t.Layout(gtx)
-						}),
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return layout.Spacer{Width: unit.Dp(8)}.Layout(gtx)
-						}),
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							if row.Active {
-								badge := material.Body2(u.th(), "● ĐANG DÙNG")
-								badge.Color = Green
-								badge.TextSize = unit.Sp(11)
-								return badge.Layout(gtx)
-							}
-							return layout.Dimensions{}
-						}),
-						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							if !row.Active && row.HasToken {
-								btn := material.Button(u.th(), u.rowClicks[i], "Dùng")
-								btn.Background = Surface1
-								btn.Color = Lavender
-								btn.TextSize = unit.Sp(12)
-								btn.CornerRadius = unit.Dp(6)
-								btn.Inset = layout.UniformInset(unit.Dp(6))
+	// Card per account: bordered, rounded, with a gap so accounts are
+	// visually separated from each other.
+	return widget.Border{
+		Color:        Surface1,
+		CornerRadius: unit.Dp(10),
+		Width:        unit.Dp(1),
+	}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			background(gtx, bg)
+			return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								t := material.Body1(u.th(), row.Email)
+								t.Color = Text
+								t.TextSize = unit.Sp(14)
+								return t.Layout(gtx)
+							}),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								return layout.Spacer{Width: unit.Dp(8)}.Layout(gtx)
+							}),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								if row.Active {
+									badge := material.Body2(u.th(), "● ĐANG DÙNG")
+									badge.Color = Green
+									badge.TextSize = unit.Sp(11)
+									return badge.Layout(gtx)
+								}
+								return layout.Dimensions{}
+							}),
+							layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								if !row.Active && row.HasToken {
+									btn := material.Button(u.th(), u.rowClicks[i], "Dùng")
+									btn.Background = Surface1
+									btn.Color = Lavender
+									btn.TextSize = unit.Sp(12)
+									btn.CornerRadius = unit.Dp(6)
+									btn.Inset = layout.UniformInset(unit.Dp(6))
+									return btn.Layout(gtx)
+								}
+								return layout.Dimensions{}
+							}),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								return layout.Spacer{Width: unit.Dp(6)}.Layout(gtx)
+							}),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								btn := material.Button(u.th(), u.rowDel[i], "✕")
+								btn.Background = withAlpha(Red, 40)
+								btn.Color = Red
+								btn.TextSize = unit.Sp(14)
+								btn.CornerRadius = unit.Dp(8)
+								// Button-sized, not a cramped text sliver: match
+								// the "Dùng" button's height and give the glyph
+								// room to breathe.
+								btn.Inset = layout.UniformInset(unit.Dp(12))
 								return btn.Layout(gtx)
-							}
-							return layout.Dimensions{}
-						}),
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return layout.Spacer{Width: unit.Dp(6)}.Layout(gtx)
-						}),
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							btn := material.Button(u.th(), u.rowDel[i], "✕")
-							btn.Background = transparent
-							btn.Color = Red
-							btn.TextSize = unit.Sp(12)
-							btn.CornerRadius = unit.Dp(6)
-							btn.Inset = layout.UniformInset(unit.Dp(6))
-							return btn.Layout(gtx)
-						}),
-					)
-				}),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							t := material.Body2(u.th(), "Quota: "+quotaLabel(row))
-							t.Color = Subtext0
-							t.TextSize = unit.Sp(12)
-							return t.Layout(gtx)
-						}),
-						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-							if row.RefreshError != "" {
-								t := material.Body2(u.th(), "⛔ token chết — thêm lại account")
-								t.Color = Red
+							}),
+						)
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								t := material.Body2(u.th(), "Quota: "+quotaLabel(row))
+								t.Color = Subtext0
 								t.TextSize = unit.Sp(12)
-								t.Alignment = text.End
 								return t.Layout(gtx)
-							}
-							if row.ProbeError != "" {
-								t := material.Body2(u.th(), "⚠ Fastly chặn tạm thời — vẫn hoạt động")
-								t.Color = Yellow
-								t.TextSize = unit.Sp(12)
-								t.Alignment = text.End
-								return t.Layout(gtx)
-							}
-							if !row.RefreshedAt.IsZero() {
-								t := material.Body2(u.th(), "✓ refresh "+row.RefreshedAt.Local().Format("15:04 02/01"))
-								t.Color = Overlay2
-								t.TextSize = unit.Sp(12)
-								t.Alignment = text.End
-								return t.Layout(gtx)
-							}
-							return layout.Dimensions{}
-						}),
-					)
-				}),
-			)
+							}),
+							layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+								if row.RefreshError != "" {
+									t := material.Body2(u.th(), "⛔ token chết — thêm lại account")
+									t.Color = Red
+									t.TextSize = unit.Sp(12)
+									t.Alignment = text.End
+									return t.Layout(gtx)
+								}
+								if row.ProbeError != "" {
+									t := material.Body2(u.th(), "⚠ Fastly chặn tạm thời — vẫn hoạt động")
+									t.Color = Yellow
+									t.TextSize = unit.Sp(12)
+									t.Alignment = text.End
+									return t.Layout(gtx)
+								}
+								if !row.RefreshedAt.IsZero() {
+									t := material.Body2(u.th(), "✓ refresh "+row.RefreshedAt.Local().Format("15:04 02/01"))
+									t.Color = Overlay2
+									t.TextSize = unit.Sp(12)
+									t.Alignment = text.End
+									return t.Layout(gtx)
+								}
+								return layout.Dimensions{}
+							}),
+						)
+					}),
+				)
+			})
 		})
 	})
 }
@@ -963,9 +974,14 @@ func (u *UI) locationRow(gtx layout.Context, i int) layout.Dimensions {
 		u.locClicks[i] = &widget.Clickable{}
 	}
 	busy := u.locConnectId == loc.Host
+	// Connected = the status snapshot is running on THIS server host.
+	st := u.statusCached
+	connected := st.Running && st.Server == loc.Host
 	bg := Surface0
 	if busy {
 		bg = withAlpha(Lavender, 50)
+	} else if connected {
+		bg = withAlpha(Green, 30)
 	}
 	return layout.Inset{Bottom: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		background(gtx, bg)
@@ -988,16 +1004,32 @@ func (u *UI) locationRow(gtx layout.Context, i int) layout.Dimensions {
 							t.TextSize = unit.Sp(11)
 							return t.Layout(gtx)
 						}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							if connected && !busy {
+								t := material.Body2(u.th(), "● Đang kết nối tới server này")
+								t.Color = Green
+								t.TextSize = unit.Sp(11)
+								return t.Layout(gtx)
+							}
+							return layout.Dimensions{}
+						}),
 					)
 				}),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					label := "Kết nối"
 					if busy {
 						label = "Đang kết nối…"
+					} else if connected {
+						label = "● Đã kết nối"
 					}
 					btn := material.Button(u.th(), u.locClicks[i], label)
-					btn.Background = Lavender
-					btn.Color = Crust
+					if connected && !busy {
+						btn.Background = withAlpha(Green, 60)
+						btn.Color = Crust
+					} else {
+						btn.Background = Lavender
+						btn.Color = Crust
+					}
 					btn.TextSize = unit.Sp(12)
 					btn.CornerRadius = unit.Dp(6)
 					btn.Inset = layout.UniformInset(unit.Dp(6))
