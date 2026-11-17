@@ -30,11 +30,13 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"io"
 	"strings"
 	"sync"
 	"time"
 
 	"gioui.org/app"
+	"gioui.org/io/clipboard"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/clip"
@@ -108,10 +110,13 @@ type UI struct {
 	locMsgErr    bool
 
 	// test tab
-	testBtn  widget.Clickable
-	testRes  *webapp.TestResult
-	testBusy bool
-	testMsg  string
+	testBtn   widget.Clickable
+	testRes   *webapp.TestResult
+	logsEdit  widget.Editor
+	logsCopy  widget.Clickable
+	logsClear widget.Clickable
+	testBusy  bool
+	testMsg   string
 
 	toast     string
 	toastErr  bool
@@ -125,7 +130,7 @@ func NewUI(e *Engine) *UI {
 		engine:    e,
 		ops:       &op.Ops{},
 		events:    make(chan uiEvent, 32),
-		tabs:      []string{"Trạng thái", "Account", "Vị trí", "Test"},
+		tabs:      []string{"Trạng thái", "Account", "Vị trí", "Test", "Logs"},
 		tabClicks: map[string]*widget.Clickable{},
 		rowClicks: map[int]*widget.Clickable{},
 		rowDel:    map[int]*widget.Clickable{},
@@ -205,6 +210,17 @@ func (u *UI) handleClicks() {
 	}
 	if u.addTokenBtn.Clicked(u.frameCtx) {
 		go u.doAddTokens()
+	}
+	if u.logsCopy.Clicked(u.frameCtx) {
+		u.frameCtx.Execute(clipboard.WriteCmd{
+			Type: "application/text",
+			Data: io.NopCloser(strings.NewReader(u.engine.RecentLogs())),
+		})
+		u.toastMsg("Đã copy log vào clipboard", false)
+	}
+	if u.logsClear.Clicked(u.frameCtx) {
+		u.engine.ClearLogs()
+		u.toastMsg("Đã xoá log", false)
 	}
 	if u.refreshAll.Clicked(u.frameCtx) {
 		go u.doRefreshAll()
@@ -501,6 +517,8 @@ func (u *UI) layout(gtx layout.Context) layout.Dimensions {
 				return u.layoutLocations(gtx)
 			case "3":
 				return u.layoutTest(gtx)
+			case "4":
+				return u.layoutLogs(gtx)
 			default:
 				return u.layoutStatus(gtx)
 			}
@@ -852,6 +870,59 @@ func (u *UI) accountRow(gtx layout.Context, i int) layout.Dimensions {
 }
 
 // locations tab ------------------------------------------------------------------------
+
+func (u *UI) layoutLogs(gtx layout.Context) layout.Dimensions {
+	// Keep the editor text in sync with the ring (cheap: one string join).
+	logs := u.engine.RecentLogs()
+	if u.logsEdit.Text() != logs {
+		u.logsEdit.SetText(logs)
+	}
+	if u.logsEdit.Text() == "" {
+		u.logsEdit.SetText("(chưa có log)")
+	}
+
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					btn := material.Button(u.th(), &u.logsCopy, "📋 Copy log")
+					btn.Background = Surface1
+					btn.Color = Sky
+					return btn.Layout(gtx)
+				}),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Spacer{Width: unit.Dp(8)}.Layout(gtx)
+				}),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					btn := material.Button(u.th(), &u.logsClear, "Xoá log")
+					btn.Background = Surface0
+					btn.Color = Overlay0
+					return btn.Layout(gtx)
+				}),
+				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					t := material.Body2(u.th(), "Log engine (keeper/rotator/edge) — giống output của docker console")
+					t.Color = Overlay0
+					t.TextSize = unit.Sp(11)
+					return layout.Center.Layout(gtx, t.Layout)
+				}),
+			)
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions { return layout.Spacer{Height: unit.Dp(8)}.Layout(gtx) }),
+		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+			return widget.Border{
+				Color:        Surface1,
+				CornerRadius: unit.Dp(8),
+				Width:        unit.Dp(1),
+			}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				background(gtx, Mantle)
+				ed := material.Editor(u.th(), &u.logsEdit, "")
+				ed.TextSize = unit.Sp(11)
+				ed.Color = Subtext1
+				return layout.UniformInset(unit.Dp(10)).Layout(gtx, ed.Layout)
+			})
+		}),
+	)
+}
 
 func (u *UI) layoutLocations(gtx layout.Context) layout.Dimensions {
 	if len(u.locRows) == 0 && !u.locLoadBusy {

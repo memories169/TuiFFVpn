@@ -101,6 +101,7 @@ func DefaultProxyAddr() string {
 // background loops — token keeper and rotator included, exactly like the web
 // console boot.
 func NewEngine(statePath, proxyAddr string) (*Engine, error) {
+	InstallLogCapture()
 	if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {
 		return nil, fmt.Errorf("create state dir: %w", err)
 	}
@@ -112,6 +113,15 @@ func NewEngine(statePath, proxyAddr string) (*Engine, error) {
 	log.Printf("fxvpn-desktop: engine ready (state=%s socks=%s)", statePath, proxyAddr)
 	return e, nil
 }
+
+// RecentLogs returns the captured engine log lines (oldest first) for the
+// Logs tab.
+func (e *Engine) RecentLogs() string {
+	return strings.Join(ring.Snapshot(), "\n")
+}
+
+// ClearLogs empties the log ring.
+func (e *Engine) ClearLogs() { ring.Clear() }
 
 // guardianEndpoint honors GUARDIAN_ENDPOINT for staging/testing.
 func guardianEndpoint() string {
