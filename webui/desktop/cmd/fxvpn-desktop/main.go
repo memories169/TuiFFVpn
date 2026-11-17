@@ -47,6 +47,7 @@ func main() {
 
 	stateFile := flag.String("state", desktop.DefaultStatePath(), "state file (same layout as fxvpn-webui)")
 	proxyAddr := flag.String("socks", desktop.DefaultProxyAddr(), "SOCKS5 listen address")
+	ingest := flag.String("ingest", "", "localhost ingest listener for the PC userscript (default 127.0.0.1:9091)")
 	showVer := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -61,6 +62,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("engine: %v", err)
 	}
+	engine.StartIngestServer(desktop.IngestAddr(*ingest))
 
 	ui := desktop.NewUI(engine)
 	go func() {

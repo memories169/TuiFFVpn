@@ -14,6 +14,8 @@
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
 // @connect      api.accounts.firefox.com
+// @connect      127.0.0.1
+// @connect      localhost
 // @connect      oauth.accounts.firefox.com
 // ==/UserScript==
 
@@ -26,10 +28,10 @@
  * nó chạy trong TRÌNH DUYỆT THẬT của bạn: TLS fingerprint thật, cookies thật,
  * IP quen thuộc — edge cho qua.
  *
- * Bản này làm cùng một việc bắt token nhưng đích đến là APP DESKTOP: app
- * desktop không mở HTTP server nên không thể "đẩy" vào app được — script
- * ĐỔI TOKEN NGAY TRÊN MÁY (browser thật = edge cho qua) rồi copy access/
- * refresh vào clipboard; bạn dán vào form "Thêm bằng token" của app.
+ * Flow GIỐNG HỆT bản docker: bắt token trong browser thật → đổi OAuth ngay
+ * trên máy (edge cho qua) → TỰ ĐẨY vào app desktop qua localhost ingest
+ * (127.0.0.1:9091) → account xuất hiện trong app. Copy clipboard vẫn giữ
+ * làm backup.
  *
  * KHÔNG dùng chung với bản container: script này không POST token đi đâu cả
  * (bản container đẩy token vào máy chủ qua HTTP; bản này copy token để dán
@@ -40,12 +42,19 @@
   'use strict';
 
   // ==== CẤU HÌNH ============================================================
-  // true = script tự gọi OAuth exchange NGAY TRÊN MÁY (2 request tới FxA với
-  // UA Firefox thật của browser) rồi tự copy access/refresh token vào
-  // clipboard — dán thẳng vào form "Thêm bằng token" của app (nhớ nhập
-  // email). Giữ true: nếu IP bị Fastly CAPTCHA-lock thì đổi token TRONG APP
-  // cũng vô ích — chỉ request từ browser thật mới qua được edge.
+  // true = script tự đổi OAuth NGAY TRÊN MÁY (2 request tới FxA với UA
+  // Firefox thật) rồi TỰ ĐẨY vào app desktop qua localhost ingest — account
+  // xuất hiện trong app không cần dán tay. Giữ true: nếu IP bị Fastly
+  // CAPTCHA-lock thì đổi token TRONG APP cũng vô ích — chỉ request từ
+  // browser thật mới qua được edge.
   var EXCHANGE_ON_PC = true;
+  // URL ingest của app desktop — khớp flag --ingest / FXVPN_INGEST_ADDR
+  // (mặc định 127.0.0.1:9091). Nhìn key trong tab Logs của app khi boot:
+  // "desktop: ingest server on ... (X-Ingest-Key=...)".
+  var CONSOLE_URL = 'http://127.0.0.1:9091';
+  // FXVPN_INGEST_KEY đã set trong môi trường app — dán giá trị vào đây để
+  // khớp. Bỏ trống = dùng key tự sinh (xem tab Logs).
+  var INGEST_KEY = '';
   // (Tùy chọn) Cloudflare Worker relayer — giống hệt relayer/worker.js của
   // FoxyVPN gốc / bản grabber cho container. Khi Fastly chặn IP/ASN mạng bạn
   // (406 dai dẳng), request đi qua egress IP của Cloudflare (trusted) sẽ
@@ -260,6 +269,35 @@
     else setStatus('bắt được sessionToken — bấm “Đổi token trên máy”.');
   }
 
+  // ---- Đẩy vào app desktop (localhost ingest) ---------------------------------
+  function pushToApp(payload) {
+    setStatus('đang gửi vào app desktop…');
+    gmFetch({
+      method: 'POST',
+      url: CONSOLE_URL.replace(/\/$/, '') + '/api/ingest',
+      data: JSON.stringify(payload),
+      headers: Object.assign(
+        { 'Content-Type': 'application/json' },
+        INGEST_KEY ? { 'X-Ingest-Key': INGEST_KEY } : {}
+      ),
+    }).then(function (r) {
+      var body = {};
+      try { body = JSON.parse(r.responseText || '{}'); } catch (e) { body = { error: (r.responseText || '').slice(0, 200) }; }
+      if (r.status === 200) {
+        setStatus('<b style="color:#8fffb0">xong ✓ app desktop đã lưu OAuth tokens</b>' + (payload.email ? ' — ' + esc(payload.email) : ''));
+        setOutput(body);
+      } else if (/invalid ingest key/i.test(body.error || '')) {
+        setStatus('<b style="color:#ff6b6b">INGEST_KEY sai</b> — đối chiếu FXVPN_INGEST_KEY (env của app) với INGEST_KEY (script); hoặc copy key từ tab Logs của app.');
+        setOutput(body);
+      } else {
+        setStatus('<b style="color:#ff6b6b">app lỗi (HTTP ' + r.status + '):</b> ' + esc((body.error || '').slice(0, 180)));
+        setOutput(body);
+      }
+    }).catch(function (err) {
+      setStatus('<b style="color:#ff6b6b">không gọi được app</b> — kiểm tra CONSOLE_URL (' + esc(String(err.message || err)) + ') và app có đang chạy không.');
+    });
+  }
+
   // ---- WebCrypto helpers (tái dùng logic bản grabber cho container) -----------
   function hkdfID(tokenHex) {
     var raw = new Uint8Array(32);
@@ -390,13 +428,19 @@
       copyText(pair);
       setStatus('<b style="color:#8fffb0">đã đổi OAuth ✓ — ĐÃ COPY vào clipboard</b>' +
         (email ? ' — ' + esc(email) : '') +
-        '<br>Dán vào form “Thêm bằng token” của app: email vào ô Email, access vào ô Access token, refresh vào ô Refresh token (mỗi dòng một ô).');
+        '<br>đang đẩy tự động vào app desktop…');
       setOutput({
         email: email,
         access_token: tok.access_token,
         refresh_token: tok.refresh_token || '',
         expires_in: tok.expires_in || 0,
         session_token: token,
+      });
+      pushToApp({
+        email: email,
+        access_token: tok.access_token,
+        refresh_token: tok.refresh_token || '',
+        expires_in: tok.expires_in || 0,
       });
     } catch (err) {
       setStatus('<b style="color:#ff6b6b">lỗi đổi token:</b> ' + esc(String(err.message || err)));
