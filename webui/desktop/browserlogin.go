@@ -99,10 +99,15 @@ func (e *Engine) BrowserLogin(ctx context.Context, onLog func(string)) (*LoginOu
 	}
 
 	logf("Đã bắt được session token (" + res.Source + ") — đang đổi sang OAuth…")
-	opts := fxa.TokenOptions{
-		Cookies:   browsercapture.HTTPCookies(res.Cookies),
-		UserAgent: res.UserAgent,
-	}
+	// Deliberately CLEAN token options: no browser cookies, no browser UA.
+	// The manual email+password flow proves the fxa-credentials exchange
+	// works with a fresh jar (fxaRetry solves the Fastly challenge itself
+	// and installs the earned cookie). Injecting the browser's cookies —
+	// including a possibly-expired _fs_ch_* earned under Chromium's TLS —
+	// into the shared jar can make the edge REJECT every attempt before
+	// the solver gets a turn, and the solver's own fresh cookie then
+	// fights the polluted jar. The token alone is all the exchange needs.
+	opts := fxa.TokenOptions{}
 	var tok *fxa.TokenResponse
 	var xerr error
 	for round := 1; round <= 3; round++ {
