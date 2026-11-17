@@ -190,6 +190,39 @@ func Capture(ctx context.Context, opts Options) (*Result, *Browser, error) {
 		browser.Close()
 		return nil, nil, err
 	}
+
+	ua := opts.UserAgent
+	if ua == "-" {
+		ua = ""
+	} else if ua == "" {
+		ua = DefaultFirefoxUA
+	}
+
+	// Pre-seed the profile with a solved Fastly anti-bot cookie BEFORE the
+	// page loads. A fresh profile hits the edge naked and the page's own
+	// /v1/account/login XHR 406s, stalling sign-in at the password step.
+	// The solver runs with the SAME UA the browser presents so the cookie
+	// binds to this client (edge ties the cookie to UA+IP).
+	if ua != "" {
+		if cookies, err := fxa.SolveChallengeCookies(ctx, ua); err != nil {
+			opts.Logf("fastly pre-seed skipped: %v", err)
+		} else {
+			for _, hc := range cookies {
+				opts.Logf("seeding fastly cookie %s", hc.Name)
+				if err := page.SeedCookie(ctx, Cookie{
+					Name:    hc.Name,
+					Value:   hc.Value,
+					Domain:  hc.Domain,
+					Path:    hc.Path,
+					Secure:  hc.Secure,
+					Expires: float64(hc.Expires.Unix()),
+				}); err != nil {
+					opts.Logf("seed %s failed: %v", hc.Name, err)
+				}
+			}
+		}
+	}
+
 	if !opts.KeepBrowser {
 		defer page.Close()
 	}

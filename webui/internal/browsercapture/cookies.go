@@ -95,3 +95,34 @@ func (p *Page) CookiesFor(ctx context.Context) ([]Cookie, error) {
 	}
 	return FirefoxCookies(all), nil
 }
+
+// SeedCookie installs one cookie into the browser via CDP. Used to pre-seed
+// a fresh profile with a solved Fastly anti-bot cookie so the page's own
+// XHRs (e.g. /v1/account/login) pass the edge instead of 406ing.
+func (p *Page) SeedCookie(ctx context.Context, c Cookie) error {
+	params := map[string]any{
+		"name":     c.Name,
+		"value":    c.Value,
+		"domain":   c.Domain,
+		"path":     c.Path,
+		"secure":   c.Secure,
+		"httpOnly": c.HTTPOnly,
+	}
+	if c.Expires > 0 {
+		params["expires"] = c.Expires
+	}
+	switch c.SameSite {
+	case "Strict", "Lax", "None":
+		params["sameSite"] = c.SameSite
+	}
+	var out struct {
+		Success bool `json:"success"`
+	}
+	if err := p.ws.call(ctx, "Network.setCookie", params, &out); err != nil {
+		return fmt.Errorf("seed cookie %s: %w", c.Name, err)
+	}
+	if !out.Success {
+		return fmt.Errorf("seed cookie %s: browser refused", c.Name)
+	}
+	return nil
+}
