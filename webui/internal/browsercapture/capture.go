@@ -907,6 +907,7 @@ func waitForToken(ctx context.Context, page *Page, opts Options) (*Result, error
 	// valid after 2FA completes, and once the status call succeeds the
 	// capture finishes with verified=true.
 	var pendingToken, pendingEmail, pendingUID, pendingSource string
+	var pendingTrusted bool
 
 	finish := func(token, email, uid, source string) *Result {
 		return &Result{SessionToken: token, Email: email, UID: uid, Source: source}
@@ -916,7 +917,18 @@ func waitForToken(ctx context.Context, page *Page, opts Options) (*Result, error
 		trusted := strings.HasPrefix(source, "webchannel:fxaccounts:login") ||
 			strings.HasPrefix(source, "webchannel:fxaccounts:oauth_login")
 		token = strings.ToLower(strings.TrimSpace(token))
-		if !IsSessionToken(token) || tried[token] {
+		if !IsSessionToken(token) {
+			return nil, false
+		}
+		if tried[token] {
+			// Same token string again. FxA re-delivers the SAME session
+			// token over fxaccounts:login after 2FA completes — if the
+			// parked copy came from the XHR sniffer (pre-2FA) and this
+			// delivery is trusted, it IS the post-2FA signal: finish.
+			if trusted && pendingToken == token {
+				opts.Logf("trusted re-delivery of parked token (%s) — accepting", source)
+				return finish(token, pendingEmail, pendingUID, source), true
+			}
 			return nil, false
 		}
 		tried[token] = true
@@ -950,6 +962,7 @@ func waitForToken(ctx context.Context, page *Page, opts Options) (*Result, error
 				}
 				opts.Logf("edge blocked validation (%v) — parking token, will re-check", err)
 				pendingToken, pendingEmail, pendingUID, pendingSource = token, email, uid, source
+				pendingTrusted = trusted
 				return nil, false
 			default:
 				// Edge/network trouble — park the candidate and keep the
@@ -958,6 +971,7 @@ func waitForToken(ctx context.Context, page *Page, opts Options) (*Result, error
 				// verified once the second factor completes).
 				opts.Logf("validation unavailable (%v) — keeping browser open, will re-check", err)
 				pendingToken, pendingEmail, pendingUID, pendingSource = token, email, uid, source
+				pendingTrusted = trusted
 				return nil, false
 			}
 		}
@@ -975,6 +989,16 @@ func waitForToken(ctx context.Context, page *Page, opts Options) (*Result, error
 			if errors.Is(err, fxa.ErrInvalidSessionToken) {
 				opts.Logf("parked token rejected by FxA: %v", err)
 				pendingToken = ""
+			} else if pendingTrusted && errors.Is(err, fxa.ErrFastlyChallenge) {
+				// Trusted delivery + edge still blocking every validation
+				// round: waiting longer changes nothing. The token came
+				// from FxA's post-completion signal — hand it over and
+				// let the exchange path solve the edge on its own clock.
+				opts.Logf("edge still blocking validation of trusted token — accepting")
+				email, uid := pendingEmail, pendingUID
+				res := finish(pendingToken, email, uid, pendingSource)
+				pendingToken = ""
+				return res, true
 			}
 			return nil, false
 		}
