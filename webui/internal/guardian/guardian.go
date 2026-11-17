@@ -24,8 +24,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
+
+	"fxsocks/webui/internal/fxa"
 )
 
 const DefaultEndpoint = "https://vpn.mozilla.org"
@@ -66,6 +71,12 @@ type Client struct {
 	Endpoint string
 	Token    string
 	HTTP     *http.Client
+
+	// Jar carries the Fastly challenge cookies earned for this host. The
+	// zero value works: doFull lazily creates it on first use.
+	Jar http.CookieJar
+
+	solveOnce sync.Once
 }
 
 func (c *Client) endpoint() string {
@@ -84,18 +95,25 @@ func (c *Client) doFull(ctx context.Context, method, path string) ([]byte, http.
 	if c.HTTP == nil {
 		c.HTTP = &http.Client{Timeout: 60 * time.Second}
 	}
-	url := c.endpoint() + path
+	reqURL := c.endpoint() + path
 
 	// The Fastly edge in front of vpn.mozilla.org serves intermittent
 	// anti-bot 406s (same family as the accounts hosts, see fxa.fxaRetry).
 	// One attempt per call means a single unlucky roll shows the account
 	// as "? / ?" until the next keeper pass 30 minutes later. Retry with
 	// backoff: 2s, 6s.
+	if c.HTTP == nil {
+		c.HTTP = &http.Client{Timeout: 60 * time.Second}
+	}
+	if c.Jar == nil {
+		c.Jar, _ = cookiejar.New(nil)
+	}
+
 	var body []byte
 	var hdr http.Header
 	var status int
 	var err error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < 4; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -103,8 +121,23 @@ func (c *Client) doFull(ctx context.Context, method, path string) ([]byte, http.
 			case <-time.After(time.Duration(1<<(attempt-1)*2) * time.Second):
 			}
 		}
+		// First 406: solve the Fastly challenge for this host ONCE per
+		// process and stash the earned cookies in the jar — later attempts
+		// (and every other call sharing this client) carry them.
+		if attempt > 0 && status == http.StatusNotAcceptable {
+			c.solveOnce.Do(func() {
+				base := c.endpoint()
+				cookies, serr := fxa.SolveChallengeCookies(ctx, base, firefoxUA)
+				if serr != nil {
+					return
+				}
+				if u, perr := url.Parse(base + "/"); perr == nil {
+					c.Jar.SetCookies(u, cookies)
+				}
+			})
+		}
 		var req *http.Request
-		req, err = http.NewRequestWithContext(ctx, method, url, nil)
+		req, err = http.NewRequestWithContext(ctx, method, reqURL, nil)
 		if err != nil {
 			return nil, nil, 0, err
 		}
@@ -116,7 +149,7 @@ func (c *Client) doFull(ctx context.Context, method, path string) ([]byte, http.
 		// to ErrTokenInvalid ("invalid token") even though the token is
 		// perfectly fine (the tunnel dials with it!). The userscript flow
 		// proved the Firefox UA passes where the client UA is challenged.
-		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0")
+		req.Header.Set("User-Agent", firefoxUA)
 		req.Header.Set("Accept", "application/json")
 		var resp *http.Response
 		resp, err = c.HTTP.Do(req)
@@ -135,6 +168,11 @@ func (c *Client) doFull(ctx context.Context, method, path string) ([]byte, http.
 	}
 	return body, hdr, status, err
 }
+
+// firefoxUA mirrors the UA the FxA edge accepts (fxa.DefaultBrowserUA —
+// kept as a literal to avoid an import cycle; the two packages share the
+// Fastly edge but not their clients).
+const firefoxUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0"
 
 // FetchProxyPass returns the proxy pass JWT and quota headers.
 func (c *Client) FetchProxyPass(ctx context.Context) (*ProxyPass, error) {

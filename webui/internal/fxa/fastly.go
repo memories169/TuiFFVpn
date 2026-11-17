@@ -122,6 +122,36 @@ func solveFastlyChallenge(ctx context.Context) error {
 	return fmt.Errorf("%w: %v", ErrFastlyChallenge, lastErr)
 }
 
+// SolveChallengeCookies runs the Fastly anti-bot handshake against the
+// given host with the given user agent and returns the earned cookies
+// WITHOUT touching the shared control-plane jar. Callers with their own
+// HTTP client (e.g. guardian.Client for vpn.mozilla.org) use this to
+// pre-seed their jar when the edge starts challenging their requests.
+func SolveChallengeCookies(ctx context.Context, base, userAgent string) ([]*http.Cookie, error) {
+	solveMu.Lock()
+	defer solveMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(ctx, solveTimeout)
+	defer cancel()
+
+	jar, err := newJar()
+	if err != nil {
+		return nil, err
+	}
+	if err := solveOnHostWith(ctx, base, userAgent, jar); err != nil {
+		return nil, err
+	}
+	parsed, err := url.Parse(base + "/")
+	if err != nil {
+		return nil, err
+	}
+	cookies := jar.Cookies(parsed)
+	if len(cookies) == 0 {
+		return nil, fmt.Errorf("challenge completed but no cookie issued")
+	}
+	return cookies, nil
+}
+
 // solveOnHost runs the challenge flow against one host with a throwaway client
 // and a fresh cookie jar.
 func solveOnHost(ctx context.Context, base, userAgent string) error {
