@@ -43,10 +43,13 @@ win32 thuần Go.)
 ## Chạy
 
 - Cửa sổ app mở ra với 4 tab: **Trạng thái / Account / Vị trí / Test**
-- Đăng nhập account: bấm **🌐 Đăng nhập qua trình duyệt** — app tự mở
-  Chrome/Edge/Brave/Helium cài sẵn trên máy, bạn đăng nhập Firefox account
-  trong đó, token được bắt tự động (không cần userscript). Không có trình
-  duyệt nào? Dán token thủ công vào khung dưới cùng.
+- Đăng nhập account: 2 cách —
+  1. Nhập **email + mật khẩu** (+ mã 2FA nếu có) rồi bấm **Đăng nhập**
+  2. Nếu Fastly chặn (lỗi 406/CAPTCHA): dùng userscript
+     `scripts/fxvpn-desktop-grabber.user.js` trong Firefox thật của bạn —
+     nó tự copy sessionToken, dán vào ô **"Session token"** rồi bấm
+     **"Đổi session thành token"**. Hoặc dán access/refresh token vào
+     form "Thêm bằng token".
 - SOCKS5 proxy lắng nghe `127.0.0.1:1080` (đổi bằng `--socks 127.0.0.1:9999`)
 - Cấu hình lưu tại `%AppData%\fxvpn\state.json`
 

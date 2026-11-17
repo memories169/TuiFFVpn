@@ -27,17 +27,14 @@ package desktop
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"image"
 	"image/color"
-	"io"
 	"strings"
 	"sync"
 	"time"
 
 	"gioui.org/app"
-	"gioui.org/io/clipboard"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/clip"
@@ -97,14 +94,6 @@ type UI struct {
 	rowClicks         map[int]*widget.Clickable
 	rowDel            map[int]*widget.Clickable
 	// browser sign-in (FoxyVPN flow — no userscript)
-	browserBtn     widget.Clickable
-	browserCopyBtn widget.Clickable
-	browserBusy    bool
-	browserCancel  context.CancelFunc
-	browserLog     string
-	// copyToken, when non-empty, is written to the clipboard on the next
-	// frame (clipboard writes must happen inside a layout pass).
-	copyToken string
 	accMsg    string
 	accMsgErr bool
 	accMsgMu  sync.Mutex
@@ -209,9 +198,6 @@ func (u *UI) handleClicks() {
 		go u.doTest()
 	}
 	// Accounts tab.
-	if u.browserBtn.Clicked(u.frameCtx) && !u.browserBusy {
-		u.startBrowserLogin()
-	}
 	if u.addBtn.Clicked(u.frameCtx) {
 		if u.session != "" {
 			go u.doVerify()
@@ -314,80 +300,6 @@ func (u *UI) reconnect() {
 		}
 		u.events <- func() { u.toastMsg("Đã kết nối lại: "+loc.City+", "+loc.Country, false) }
 		go u.refreshStatus()
-	}()
-}
-
-// startBrowserLogin launches the in-app browser sign-in (FoxyVPN flow):
-// a Chromium window opens, the user signs in there, the app captures the
-// session token over the FxA WebChannel and exchanges it — no userscript.
-func (u *UI) startBrowserLogin() {
-	ctx, cancel := context.WithCancel(context.Background())
-	u.browserCancel = cancel
-	u.browserBusy = true
-	u.browserLog = "Đang mở trình duyệt đăng nhập Firefox…"
-	u.accMsg = ""
-	u.accMsgErr = false
-
-	go func() {
-		outcome, err := u.engine.BrowserLogin(ctx, func(line string) {
-			u.events <- func() {
-				// keep the last ~8 progress lines
-				lines := strings.Split(u.browserLog, "\n")
-				lines = append(lines, line)
-				if len(lines) > 8 {
-					lines = lines[len(lines)-8:]
-				}
-				u.browserLog = strings.Join(lines, "\n")
-			}
-		})
-		u.events <- func() {
-			u.browserBusy = false
-			if u.browserCancel != nil {
-				u.browserCancel()
-				u.browserCancel = nil
-			}
-			switch {
-			case err == context.Canceled:
-				u.accMsg = "Đã huỷ đăng nhập qua trình duyệt"
-				u.accMsgErr = false
-			case err == errBrowserTimeout:
-				u.accMsg = err.Error()
-				u.accMsgErr = true
-			case err != nil:
-				var exch errExchange
-				if errors.As(err, &exch) {
-					// Sign-in worked; only the token exchange failed. Put
-					// the session token where the user can actually copy
-					// it: into the browser log box (which has a Copy log
-					// button) AND auto-copied to the clipboard on the next
-					// frame via copyToken pending.
-					u.accMsg = "Đăng nhập thành công nhưng đổi token thất bại: " + exch.err.Error() +
-						" — session token đã được copy vào clipboard (và hiện trong khung log), dán vào ô Session token bên dưới rồi bấm Đăng nhập."
-					u.accMsgErr = true
-					lines := strings.Split(u.browserLog, "\n")
-					if u.browserLog == "" {
-						lines = []string{"Session token:"}
-					}
-					u.browserLog = strings.Join(append(lines, exch.sessionToken), "\n")
-					u.copyToken = exch.sessionToken
-				} else {
-					u.accMsg = "Đăng nhập qua trình duyệt thất bại: " + err.Error() +
-						" — cần Chrome/Chromium trên máy (FXVPN_BROWSER để chỉ đường dẫn). Có thể dán token thủ công bên dưới."
-					u.accMsgErr = true
-				}
-			default:
-				if cerr := u.engine.CompleteBrowserLogin(outcome); cerr != nil {
-					u.accMsg = "Lỗi lưu token: " + cerr.Error()
-					u.accMsgErr = true
-				} else {
-					u.accMsg = "Đã thêm " + outcome.Email + " (qua trình duyệt)"
-					u.accMsgErr = false
-					u.browserLog = ""
-					go u.refreshAccounts()
-					go u.refreshStatus()
-				}
-			}
-		}
 	}()
 }
 
@@ -804,22 +716,6 @@ func (u *UI) layoutAccounts(gtx layout.Context) layout.Dimensions {
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 								return layout.Spacer{Width: unit.Dp(8)}.Layout(gtx)
 							}),
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								// FoxyVPN-style: sign in inside a hooked browser
-								// window; the app captures the session token —
-								// no userscript needed on a standalone PC.
-								label := "🌐 Đăng nhập qua trình duyệt"
-								if u.browserBusy {
-									label = "🌐 Đang chờ bạn đăng nhập…"
-								}
-								btn := material.Button(u.th(), &u.browserBtn, label)
-								btn.Background = Surface1
-								btn.Color = Sky
-								return btn.Layout(gtx)
-							}),
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return layout.Spacer{Width: unit.Dp(8)}.Layout(gtx)
-							}),
 							layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 								return u.editorLine(gtx, &u.codeEdit, "Mã 2FA (nếu có)")
 							}),
@@ -886,57 +782,6 @@ func (u *UI) layoutAccounts(gtx layout.Context) layout.Dimensions {
 						return layout.Center.Layout(gtx, t.Layout)
 					}),
 				)
-			}),
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				// Browser sign-in progress (only while it runs — or when a
-				// captured session token is waiting to be copied).
-				if (!u.browserBusy || u.browserLog == "") && u.copyToken == "" {
-					return layout.Dimensions{}
-				}
-				// Auto-copy the captured session token once, then clear it
-				// (clipboard writes are only legal inside a layout pass).
-				if u.copyToken != "" {
-					gtx.Execute(clipboard.WriteCmd{
-						Type: "application/text",
-						Data: io.NopCloser(strings.NewReader(u.copyToken)),
-					})
-					u.copyToken = ""
-				}
-				return widget.Border{
-					Color:        Sky,
-					CornerRadius: unit.Dp(8),
-					Width:        unit.Dp(1),
-				}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					background(gtx, withAlpha(Sky, 25))
-					return layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								t := material.Body2(u.th(), u.browserLog)
-								t.Color = Subtext1
-								t.TextSize = unit.Sp(12)
-								return t.Layout(gtx)
-							}),
-							// Copy button: the log box is select-resistant in
-							// Gio, so give the user a one-click copy to paste
-							// diagnostics back to the developer.
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								if u.browserCopyBtn.Clicked(gtx) {
-									gtx.Execute(clipboard.WriteCmd{
-										Type: "application/text",
-										Data: io.NopCloser(strings.NewReader(u.browserLog)),
-									})
-									u.toastMsg("Đã copy log vào clipboard", false)
-								}
-								btn := material.Button(u.th(), &u.browserCopyBtn, "📋 Copy log")
-								btn.Background = withAlpha(Surface1, 255)
-								btn.Color = Sky
-								btn.TextSize = unit.Sp(11)
-								btn.Inset = layout.Inset{Top: unit.Dp(5), Bottom: unit.Dp(5), Left: unit.Dp(10), Right: unit.Dp(10)}
-								return layout.Inset{Top: unit.Dp(6)}.Layout(gtx, btn.Layout)
-							}),
-						)
-					})
-				})
 			}),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions { return layout.Spacer{Height: unit.Dp(10)}.Layout(gtx) }),
 			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
