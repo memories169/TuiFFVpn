@@ -145,8 +145,9 @@ async function loadAccounts() {
     });
     const del = document.createElement('button');
     del.type = 'button';
-    del.textContent = 'Xóa';
-    del.className = 'ghost small';
+    del.textContent = '✕';
+    del.title = 'Xóa account';
+    del.className = 'small';
     del.addEventListener('click', async () => {
       if (!confirm('Xóa account ' + a.email + '? Proxy đang chạy trên account này sẽ dừng.')) return;
       await api('accounts/delete', 'POST', { email: a.email });
@@ -196,7 +197,7 @@ async function restoreSelection() {
             const li = document.createElement('li');
             const btn = document.createElement('button');
             const isCurrent = srv.hostname === selected.server_host;
-            btn.textContent = srv.hostname + ':' + srv.port + (isCurrent ? '  ✓' : '');
+            btn.textContent = srv.hostname + ':' + srv.port + (isCurrent && (st.proxy || {}).running ? '  ● đang kết nối' : '');
             if (isCurrent) btn.classList.add('current-server');
             btn.addEventListener('click', () => pickServer(country, city, srv, btn));
             li.appendChild(btn);
@@ -243,8 +244,12 @@ async function pickServer(country, city, srv, btn) {
     }
     return;
   }
-  $('test-result').textContent = `Đã chọn ${srv.hostname}:${srv.port} — proxy đang chạy. Bấm Test connection để kiểm tra exit IP.`;
-  document.querySelectorAll('.server-list button').forEach((b) => b.classList.remove('current-server'));
+  $('test-result').textContent = `● Đang kết nối ${srv.hostname}:${srv.port} — proxy đang chạy. Bấm Test connection để kiểm tra exit IP.`;
+  document.querySelectorAll('.server-list button').forEach((b) => {
+    b.classList.remove('current-server');
+    b.textContent = b.textContent.replace(/^● /, '');
+  });
+  btn.textContent = '● ' + srv.hostname + ':' + srv.port;
   btn.classList.add('current-server');
 }
 

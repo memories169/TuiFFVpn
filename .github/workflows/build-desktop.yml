@@ -16,10 +16,26 @@ name: build-desktop
 on:
   workflow_dispatch:
     inputs:
-      build_appimage:
-        description: "Also build the Linux AppImage"
+      build_linux:
+        description: "Build Linux (amd64/arm64 + AppImage)"
         type: boolean
         default: true
+      build_windows:
+        description: "Build Windows (amd64)"
+        type: boolean
+        default: true
+      build_macos:
+        description: "Build macOS (amd64/arm64)"
+        type: boolean
+        default: true
+      release_kind:
+        description: "Output type"
+        type: choice
+        default: ci
+        options:
+          - ci          # artifacts only (14-day retention)
+          - pre-release # GitHub Release marked pre-release
+          - release     # GitHub Release (stable)
   push:
     tags: ["v*"]
 
@@ -34,6 +50,7 @@ jobs:
   linux:
     name: linux-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
+    if: github.event_name == 'push' || inputs.build_linux
     strategy:
       fail-fast: false
       matrix:
@@ -92,7 +109,7 @@ jobs:
     name: appimage-amd64
     runs-on: ubuntu-22.04
     needs: linux
-    if: github.event_name == 'push' || inputs.build_appimage
+    if: ${{ github.event_name == 'push' || inputs.build_linux }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -196,6 +213,7 @@ jobs:
     # only); CGO stays off exactly like the container build.
     name: windows-amd64
     runs-on: ubuntu-22.04
+    if: github.event_name == 'push' || inputs.build_windows
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -236,6 +254,7 @@ jobs:
     # against Apple's frameworks, which cannot be cross-compiled from Linux.
     name: macos-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
+    if: github.event_name == 'push' || inputs.build_macos
     strategy:
       fail-fast: false
       matrix:
@@ -277,12 +296,29 @@ jobs:
           retention-days: 14
 
   release:
-    # Attach all binaries to the GitHub Release for tag builds (v*).
-    # The AppImage (skippable job) is included when it ran.
+    # ci      → artifacts only (no release step)
+    # pre-release / release (manual, or tag push v*) → GitHub Release with
+    # the built binaries. Only the SELECTED platforms gate the release:
+    # a job that was skipped because its platform was unchecked doesn't
+    # block publishing what did build.
     name: release
     runs-on: ubuntu-latest
-    needs: [linux, windows, macos]
-    if: ${{ !cancelled() && needs.linux.result == 'success' && needs.windows.result == 'success' && needs.macos.result == 'success' }}
+    needs: [linux, windows, macos, appimage]
+    if: >-
+      ${{
+        !cancelled() &&
+        (github.event_name == 'push' || inputs.release_kind != 'ci') &&
+        (
+          (needs.linux.result == 'success' || needs.linux.result == 'skipped') &&
+          (needs.windows.result == 'success' || needs.windows.result == 'skipped') &&
+          (needs.macos.result == 'success' || needs.macos.result == 'skipped')
+        ) &&
+        (
+          needs.linux.result == 'success' ||
+          needs.windows.result == 'success' ||
+          needs.macos.result == 'success'
+        )
+      }}
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -295,3 +331,4 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+          prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.release_kind == 'pre-release' }}

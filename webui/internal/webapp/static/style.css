@@ -27,10 +27,26 @@ button:hover { filter: brightness(1.08); }
 .warn-badge { color: #b8860b; font-size: 12px; }
 [data-theme="dark"] .dead-badge { color: #ff6b6b; }
 [data-theme="dark"] .warn-badge { color: #f5c542; }
-.account-item { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 0; border-bottom: 1px dashed var(--border); }
-.account-item:last-child { border-bottom: 0; }
+.account-item {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 12px; margin: 0 0 10px;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: rgba(255, 255, 255, .03);
+}
+.account-item:last-child { border-bottom: 1px solid var(--border); }
+.account-item.account-active {
+  border-color: var(--accent);
+  background: rgba(77, 141, 255, .08);
+}
 .account-item span { flex: 1; min-width: 200px; }
 .account-item button { margin-top: 0; padding: 6px 12px; font-size: 13px; }
+.account-item button.del {
+  padding: 6px 14px; font-size: 14px;
+  color: #d70022; border-color: #d70022; background: transparent;
+}
+.account-item button.del:hover { background: rgba(215, 0, 34, .12); }
+[data-theme="dark"] .account-item button.del { color: #ff6b6b; border-color: #ff6b6b; }
+[data-theme="dark"] .account-item button.del:hover { background: rgba(255, 107, 107, .15); }
 button.small { padding: 6px 12px; font-size: 13px; }
 .server-list { list-style: none; padding: 0; margin: 8px 0; }
 .server-list li { margin: 6px 0; }
@@ -53,4 +69,8 @@ button.small { padding: 6px 12px; font-size: 13px; }
 [data-theme="dark"] .server-list button { background: #1f2640; color: var(--fg); border-color: var(--border); }
 [data-theme="dark"] .account-item button { background: #1f2640; color: var(--fg); border-color: var(--border); }
 [data-theme="dark"] .topbar { background: #151a2e; }
-.current-server { outline: 2px solid var(--accent); background: rgba(77,141,255,.08); }
+.current-server {
+  outline: 2px solid #2fb344; background: rgba(47, 179, 68, .10);
+  color: #2fb344; font-weight: 600;
+}
+[data-theme="dark"] .current-server { color: #58d68d; }
