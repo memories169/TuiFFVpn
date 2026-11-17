@@ -205,8 +205,9 @@ func Capture(ctx context.Context, opts Options) (*Result, *Browser, error) {
 	// binds to this client (edge ties the cookie to UA+IP).
 	// Warm the Fastly edge for both FxA origins BEFORE the login page: the
 	// challenge cookie is bound to the browser's own TLS fingerprint, so it
-	// must be earned by THIS browser, not by the Go solver. Visiting the
-	// origins lets the challenge JS run and plant _fs_ch_* for each host.
+	// must be earned by THIS browser, not by the Go solver. warmFastly also
+	// performs the final navigation to the login URL once both challenge
+	// cookies are planted.
 	page.warmFastly(ctx, opts.Logf)
 
 	if !opts.KeepBrowser {
@@ -260,8 +261,9 @@ func (b *Browser) Close() {
 
 // Page is one DevTools target.
 type Page struct {
-	ws   *cdpClient
-	logf func(string, ...any)
+	ws       *cdpClient
+	logf     func(string, ...any)
+	loginURL string
 }
 
 // Close closes the page's DevTools connection.
@@ -555,6 +557,13 @@ func (p *Page) warmFastly(ctx context.Context, logf func(string, ...any)) {
 		}
 		cancel()
 	}
+	// Final hop: the login page itself, now carrying both origins'
+	// challenge cookies.
+	wctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	if err := p.navigateAndWait(wctx, p.loginURL); err != nil {
+		logf("open login page: %v", err)
+	}
+	cancel()
 }
 
 // navigateAndWait drives the page to u and waits for the load event
@@ -588,6 +597,7 @@ func (p *Page) navigateAndWait(ctx context.Context, u string) error {
 }
 
 func (p *Page) setup(ctx context.Context, targetURL string) error {
+	p.loginURL = targetURL
 	// Network domain: intercept /account/login and /oauth/token responses
 	// directly. The WebChannel handshake is the primary capture path, but
 	// Chromium doesn't speak WebChannel natively and the content server's
@@ -607,9 +617,10 @@ func (p *Page) setup(ctx context.Context, targetURL string) error {
 	}, nil); err != nil {
 		return err
 	}
-	if err := p.ws.call(ctx, "Page.navigate", map[string]any{"url": targetURL}, nil); err != nil {
-		return err
-	}
+	// Navigation is driven by the caller: warmFastly visits the Fastly-
+	// challenged origins first, and its final navigateAndWait lands on
+	// targetURL (the login page). Navigating here as well would race the
+	// warm-up and could leave the window on the API origin.
 	return nil
 }
 
