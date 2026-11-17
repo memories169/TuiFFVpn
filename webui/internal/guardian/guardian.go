@@ -85,21 +85,49 @@ func (c *Client) doFull(ctx context.Context, method, path string) ([]byte, http.
 		c.HTTP = &http.Client{Timeout: 60 * time.Second}
 	}
 	url := c.endpoint() + path
-	req, err := http.NewRequestWithContext(ctx, method, url, nil)
-	if err != nil {
-		return nil, nil, 0, err
+
+	// The Fastly edge in front of vpn.mozilla.org serves intermittent
+	// anti-bot 406s (same family as the accounts hosts, see fxa.fxaRetry).
+	// One attempt per call means a single unlucky roll shows the account
+	// as "? / ?" until the next keeper pass 30 minutes later. Retry with
+	// backoff: 2s, 6s.
+	var body []byte
+	var hdr http.Header
+	var status int
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, nil, 0, ctx.Err()
+			case <-time.After(time.Duration(1<<(attempt-1)*2) * time.Second):
+			}
+		}
+		var req *http.Request
+		req, err = http.NewRequestWithContext(ctx, method, url, nil)
+		if err != nil {
+			return nil, nil, 0, err
+		}
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", "MozillaVPN/2.35.0 (sys:linux; iap:true)")
+		req.Header.Set("Accept", "application/json")
+		var resp *http.Response
+		resp, err = c.HTTP.Do(req)
+		if err != nil {
+			continue
+		}
+		body, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		hdr, status = resp.Header, resp.StatusCode
+		if status != http.StatusNotAcceptable {
+			return body, hdr, status, nil
+		}
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "MozillaVPN/2.35.0 (sys:linux; iap:true)")
-	req.Header.Set("Accept", "application/json")
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, nil, 0, err
+	if err == nil {
+		err = fmt.Errorf("HTTP %d", status)
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	return body, resp.Header, resp.StatusCode, nil
+	return body, hdr, status, err
 }
 
 // FetchProxyPass returns the proxy pass JWT and quota headers.
