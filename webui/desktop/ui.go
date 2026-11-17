@@ -87,6 +87,8 @@ type UI struct {
 	addTokenBtn       widget.Clickable
 	tokenAccess       widget.Editor
 	tokenRefr         widget.Editor
+	addSessionBtn     widget.Clickable
+	sessionEdit       widget.Editor
 	refreshAll        widget.Clickable
 	accList           widget.List
 	accRows           []AccountRow
@@ -219,6 +221,9 @@ func (u *UI) handleClicks() {
 	}
 	if u.addTokenBtn.Clicked(u.frameCtx) {
 		go u.doAddTokens()
+	}
+	if u.addSessionBtn.Clicked(u.frameCtx) {
+		go u.doAddSessionToken()
 	}
 	if u.refreshAll.Clicked(u.frameCtx) {
 		go u.doRefreshAll()
@@ -517,6 +522,28 @@ func (u *UI) doVerify() {
 	go u.refreshAccounts()
 }
 
+func (u *UI) doAddSessionToken() {
+	token := strings.TrimSpace(u.sessionEdit.Text())
+	if token == "" {
+		u.setAccMsg("Dán session token trước", true)
+		return
+	}
+	msg, isErr := func() (string, bool) {
+		if err := u.engine.AddSessionToken(context.Background(), token); err != nil {
+			return "Đổi session thất bại: " + err.Error(), true
+		}
+		return "Đã thêm account từ session token", false
+	}()
+	u.events <- func() {
+		u.setAccMsg(msg, isErr)
+		if !isErr {
+			u.sessionEdit.SetText("")
+			go u.refreshAccounts()
+			go u.refreshStatus()
+		}
+	}
+}
+
 func (u *UI) doAddTokens() {
 	email := strings.TrimSpace(u.emailEdit.Text())
 	access := strings.TrimSpace(u.tokenAccess.Text())
@@ -797,6 +824,23 @@ func (u *UI) layoutAccounts(gtx layout.Context) layout.Dimensions {
 								return u.editorLine(gtx, &u.codeEdit, "Mã 2FA (nếu có)")
 							}),
 						)
+					}),
+				)
+			}),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions { return layout.Spacer{Height: unit.Dp(6)}.Layout(gtx) }),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+						return u.editorLine(gtx, &u.sessionEdit, "Session token (từ đăng nhập browser)")
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return layout.Spacer{Width: unit.Dp(8)}.Layout(gtx)
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						btn := material.Button(u.th(), &u.addSessionBtn, "Đổi session thành token")
+						btn.Background = Surface0
+						btn.Color = Sky
+						return btn.Layout(gtx)
 					}),
 				)
 			}),
