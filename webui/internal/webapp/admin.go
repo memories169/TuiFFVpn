@@ -154,23 +154,3 @@ func (a *App) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
-
-type themeReq struct {
-	Theme string `json:"theme"`
-}
-
-func (a *App) handleTheme(w http.ResponseWriter, r *http.Request) {
-	var req themeReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, 400, map[string]any{"error": "bad request"})
-		return
-	}
-	a.mu.Lock()
-	err := a.Store.SetTheme(req.Theme)
-	a.mu.Unlock()
-	if err != nil {
-		writeJSON(w, 500, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, 200, map[string]any{"ok": true, "theme": req.Theme})
-}

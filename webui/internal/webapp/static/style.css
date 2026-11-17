@@ -1,19 +1,48 @@
-:root { --fg: #1a1a2e; --muted: #666; --accent: #0060df; --border: #d7d7ef; }
+/* Catppuccin Macchiato — same palette as the desktop app (webui/desktop/theme.go). */
+:root {
+  --rosewater: #f4dbd6;
+  --mauve:     #c6a0f6;
+  --red:       #ed8796;
+  --peach:     #f5a97f;
+  --yellow:    #eed49f;
+  --green:     #a6da95;
+  --teal:      #8bd5ca;
+  --sky:       #91d7e3;
+  --sapphire:  #7dc4e8;
+  --lavender:  #b7bdf8;
+  --text:      #caddd6f3;
+  --subtext1:  #b8c0e0;
+  --subtext0:  #a5adcb;
+  --overlay2:  #939ab7;
+  --overlay0:  #6e738d;
+  --surface2:  #5b6078;
+  --surface1:  #494d64;
+  --surface0:  #363a4f;
+  --base:      #24273a;
+  --mantle:    #1e2030;
+  --crust:     #181926;
+
+  --fg: var(--text);
+  --muted: var(--overlay0);
+  --accent: var(--lavender);
+  --border: var(--surface1);
+}
 * { box-sizing: border-box; }
 body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-  background: #f4f4fb; color: var(--fg); margin: 0; }
+  background: var(--base); color: var(--fg); margin: 0; }
 .container { max-width: 720px; margin: 0 auto; padding: 24px; }
 h1 { font-size: 22px; }
-.card { background: #fff; border: 1px solid var(--border); border-radius: 10px;
+.card { background: var(--mantle); border: 1px solid var(--border); border-radius: 10px;
   padding: 20px; margin: 16px 0; }
 .hidden { display: none; }
 label { display: block; margin: 10px 0; font-weight: 600; }
 input, select { width: 100%; padding: 10px; margin-top: 4px; border: 1px solid var(--border);
   border-radius: 8px; font-size: 15px; }
-button { background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+button { background: var(--lavender); color: var(--crust); border: 0; border-radius: 8px;
+  font-weight: 600;
   padding: 10px 18px; font-size: 15px; cursor: pointer; margin-top: 8px; }
 button:hover { filter: brightness(1.08); }
-.error { color: #d70022; font-size: 14px; }
+.error { color: var(--red); font-size: 14px; }
 .muted { color: var(--muted); font-size: 14px; }
 .account-active { border-left: 3px solid var(--accent); padding-left: 8px; }
 .active-badge { color: var(--accent); font-size: 12px; }
@@ -23,10 +52,8 @@ button:hover { filter: brightness(1.08); }
 .account-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 8px 0 4px; }
 .account-actions button { margin-top: 0; }
 /* Trạng thái từng account: ⛔ token chết thật, ⚠ cảnh báo tạm thời (Fastly). */
-.dead-badge { color: #d70022; font-size: 12px; font-weight: 600; }
-.warn-badge { color: #b8860b; font-size: 12px; }
-[data-theme="dark"] .dead-badge { color: #ff6b6b; }
-[data-theme="dark"] .warn-badge { color: #f5c542; }
+.dead-badge { color: var(--red); font-size: 12px; font-weight: 600; }
+.warn-badge { color: var(--peach); font-size: 12px; }
 .account-item {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 12px; margin: 0 0 10px;
@@ -35,42 +62,23 @@ button:hover { filter: brightness(1.08); }
 }
 .account-item:last-child { border-bottom: 1px solid var(--border); }
 .account-item.account-active {
-  border-color: var(--accent);
-  background: rgba(77, 141, 255, .08);
+  border-color: var(--green);
+  background: rgba(166, 218, 149, .08);
 }
 .account-item span { flex: 1; min-width: 200px; }
 .account-item button { margin-top: 0; padding: 6px 12px; font-size: 13px; }
 .account-item button.del {
   padding: 6px 14px; font-size: 14px;
-  color: #d70022; border-color: #d70022; background: transparent;
+  color: var(--red); border-color: var(--red); background: transparent;
 }
-.account-item button.del:hover { background: rgba(215, 0, 34, .12); }
-[data-theme="dark"] .account-item button.del { color: #ff6b6b; border-color: #ff6b6b; }
-[data-theme="dark"] .account-item button.del:hover { background: rgba(255, 107, 107, .15); }
+.account-item button.del:hover { background: rgba(237, 135, 150, .15); }
 button.small { padding: 6px 12px; font-size: 13px; }
 .server-list { list-style: none; padding: 0; margin: 8px 0; }
 .server-list li { margin: 6px 0; }
-.server-list button { width: 100%; background: #f0f0fa; color: var(--fg); text-align: left; border: 1px solid var(--border); }
-.status { background: #0f1222; color: #8fffb0; padding: 12px; border-radius: 8px;
+.server-list button { width: 100%; background: var(--surface0); color: var(--fg); text-align: left; border: 1px solid var(--border); }
+.status { background: var(--crust); color: var(--green); padding: 12px; border-radius: 8px;
   font-size: 13px; overflow: auto; }
-
-/* Dark theme */
-[data-theme="dark"] {
-  --fg: #eef0ff;
-  --muted: #9aa0b5;
-  --accent: #4d8dff;
-  --border: #2a2f45;
-}
-[data-theme="dark"] body { background: #10131f; }
-[data-theme="dark"] .card { background: #1a1f33; border-color: var(--border); }
-[data-theme="dark"] input, [data-theme="dark"] select {
-  background: #12182b; color: var(--fg); border-color: var(--border);
-}
-[data-theme="dark"] .server-list button { background: #1f2640; color: var(--fg); border-color: var(--border); }
-[data-theme="dark"] .account-item button { background: #1f2640; color: var(--fg); border-color: var(--border); }
-[data-theme="dark"] .topbar { background: #151a2e; }
 .current-server {
-  outline: 2px solid #2fb344; background: rgba(47, 179, 68, .10);
-  color: #2fb344; font-weight: 600;
+  outline: 2px solid var(--green); background: rgba(166, 218, 149, .10);
+  color: var(--green); font-weight: 600;
 }
-[data-theme="dark"] .current-server { color: #58d68d; }

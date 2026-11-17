@@ -13,7 +13,6 @@ async function api(path, method, body) {
 (async function init() {
   const st = await api('admin/status');
   if (st.authenticated) {
-    applyTheme(st.theme || 'light');
     showApp();
   }
   bindAdminForm();
@@ -44,7 +43,6 @@ function showApp() {
   loadAccounts();
   loadCountries();
   bindSettings();
-  loadStatusTheme();
 }
 
 // ---- Tabs ----
@@ -140,8 +138,7 @@ async function loadAccounts() {
         use.disabled = false;
         alert('Chuyển account: ' + res.error);
       }
-      loadStatusTheme();
-      loadAccounts();
+          loadAccounts();
     });
     const del = document.createElement('button');
     del.type = 'button';
@@ -151,8 +148,7 @@ async function loadAccounts() {
     del.addEventListener('click', async () => {
       if (!confirm('Xóa account ' + a.email + '? Proxy đang chạy trên account này sẽ dừng.')) return;
       await api('accounts/delete', 'POST', { email: a.email });
-      loadStatusTheme();
-      loadAccounts();
+          loadAccounts();
     });
     li.appendChild(span);
     li.appendChild(use);
@@ -304,23 +300,6 @@ $('test-conn').addEventListener('click', async () => {
   }
   btn.disabled = false;
 });
-
-// ---- Settings ----
-async function loadStatusTheme() {
-  const st = await api('admin/status');
-  $('theme').value = st.theme || 'light';
-  applyTheme(st.theme || 'light');
-}
-
-$('apply-theme').addEventListener('click', async () => {
-  const theme = $('theme').value;
-  const res = await api('admin/theme', 'POST', { theme });
-  if (res.ok) { applyTheme(theme); }
-});
-
-function applyTheme(theme) {
-  document.documentElement.setAttribute('data-theme', theme);
-}
 
 $('pass-form').addEventListener('submit', async (e) => {
   e.preventDefault();

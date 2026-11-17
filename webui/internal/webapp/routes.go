@@ -44,7 +44,6 @@ func (a *App) Routes() http.Handler {
 
 	// Authed: everything else.
 	mux.HandleFunc("/api/admin/change-password", a.requireAuth(a.handleChangePassword))
-	mux.HandleFunc("/api/admin/theme", a.requireAuth(a.handleTheme))
 	mux.HandleFunc("/api/accounts", a.requireAuth(a.handleAccounts))
 	mux.HandleFunc("/api/accounts/delete", a.requireAuth(a.handleAccountDelete))
 	mux.HandleFunc("/api/accounts/refresh-all", a.requireAuth(a.handleAccountsRefreshAll))
