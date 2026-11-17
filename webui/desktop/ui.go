@@ -31,11 +31,13 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"io"
 	"strings"
 	"sync"
 	"time"
 
 	"gioui.org/app"
+	"gioui.org/io/clipboard"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/clip"
@@ -93,13 +95,14 @@ type UI struct {
 	rowClicks         map[int]*widget.Clickable
 	rowDel            map[int]*widget.Clickable
 	// browser sign-in (FoxyVPN flow — no userscript)
-	browserBtn    widget.Clickable
-	browserBusy   bool
-	browserCancel context.CancelFunc
-	browserLog    string
-	accMsg        string
-	accMsgErr     bool
-	accMsgMu      sync.Mutex
+	browserBtn     widget.Clickable
+	browserCopyBtn widget.Clickable
+	browserBusy    bool
+	browserCancel  context.CancelFunc
+	browserLog     string
+	accMsg         string
+	accMsgErr      bool
+	accMsgMu       sync.Mutex
 
 	// locations tab
 	refreshLocs  widget.Clickable
@@ -841,10 +844,32 @@ func (u *UI) layoutAccounts(gtx layout.Context) layout.Dimensions {
 				}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 					background(gtx, withAlpha(Sky, 25))
 					return layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-						t := material.Body2(u.th(), u.browserLog)
-						t.Color = Subtext1
-						t.TextSize = unit.Sp(12)
-						return t.Layout(gtx)
+						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								t := material.Body2(u.th(), u.browserLog)
+								t.Color = Subtext1
+								t.TextSize = unit.Sp(12)
+								return t.Layout(gtx)
+							}),
+							// Copy button: the log box is select-resistant in
+							// Gio, so give the user a one-click copy to paste
+							// diagnostics back to the developer.
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								if u.browserCopyBtn.Clicked(gtx) {
+									gtx.Execute(clipboard.WriteCmd{
+										Type: "application/text",
+										Data: io.NopCloser(strings.NewReader(u.browserLog)),
+									})
+									u.toastMsg("Đã copy log vào clipboard", false)
+								}
+								btn := material.Button(u.th(), &u.browserCopyBtn, "📋 Copy log")
+								btn.Background = withAlpha(Surface1, 255)
+								btn.Color = Sky
+								btn.TextSize = unit.Sp(11)
+								btn.Inset = layout.Inset{Top: unit.Dp(5), Bottom: unit.Dp(5), Left: unit.Dp(10), Right: unit.Dp(10)}
+								return layout.Inset{Top: unit.Dp(6)}.Layout(gtx, btn.Layout)
+							}),
+						)
 					})
 				})
 			}),
