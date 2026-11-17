@@ -110,7 +110,13 @@ func (c *Client) doFull(ctx context.Context, method, path string) ([]byte, http.
 		}
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("User-Agent", "MozillaVPN/2.35.0 (sys:linux; iap:true)")
+		// Firefox browser UA, NOT the MozillaVPN client UA: the same Fastly
+		// edge family fronts vpn.mozilla.org, and from a bot-score-flagged
+		// IP it answers the client UA with 403 — which FetchProxyPass maps
+		// to ErrTokenInvalid ("invalid token") even though the token is
+		// perfectly fine (the tunnel dials with it!). The userscript flow
+		// proved the Firefox UA passes where the client UA is challenged.
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0")
 		req.Header.Set("Accept", "application/json")
 		var resp *http.Response
 		resp, err = c.HTTP.Do(req)
