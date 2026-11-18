@@ -49,6 +49,12 @@ const udpSessionTimeout = 12 * time.Second
 // the caller, edge rejection, unsupported).
 var ErrUDPSession = errors.New("proxy: CONNECT-UDP session failed")
 
+// ErrUDPPolicy marks destinations the Mozilla edge refuses to proxy via
+// CONNECT-UDP ("Destination IP Prohibited"): the FPN proxy-pass path is
+// scoped, and arbitrary Internet UDP destinations are not in its allowlist.
+// TCP CONNECT has no such restriction — HTTP trackers still work.
+var ErrUDPPolicy = errors.New("proxy: edge prohibits this UDP destination")
+
 // udpSession is one RFC 9298 CONNECT-UDP tunnel: a stream-paired net.Conn
 // carrying UDP datagrams wrapped in the HTTP Datagrams capsule format.
 type udpSession struct {
@@ -259,10 +265,18 @@ func (m *MasqueDialer) dialUDPSession(ctx context.Context, host string, port int
 		resp.Body.Close()
 		pw.Close()
 		release()
-		log.Printf("proxy: UDP CONNECT-UDP to %s:%d FAILED — edge answered HTTP %d: %s",
-			host, port, resp.StatusCode, strings.TrimSpace(string(body[:n])))
+		msg := strings.TrimSpace(string(body[:n]))
+		log.Printf("proxy: UDP CONNECT-UDP to %s:%d FAILED — edge answered HTTP %d: %s", host, port, resp.StatusCode, msg)
+		// Edge-policy rejections ("Destination IP Prohibited") are permanent
+		// for this destination: retrying through the same session only burns
+		// edge calls. Mark them so the relay drops the session instead of
+		// re-dialing on every tracker re-announce.
+		if strings.Contains(msg, "Prohibited") || resp.StatusCode == http.StatusForbidden {
+			return nil, fmt.Errorf("%w: edge policy prohibits %s (HTTP %d: %s) — this destination is not allowed by the Mozilla edge; TCP trackers still work",
+				ErrUDPPolicy, dst, resp.StatusCode, msg)
+		}
 		return nil, fmt.Errorf("%w: edge answered HTTP %d for %s: %s",
-			ErrUDPSession, resp.StatusCode, dst, strings.TrimSpace(string(body[:n])))
+			ErrUDPSession, resp.StatusCode, dst, msg)
 	}
 	log.Printf("proxy: UDP CONNECT-UDP session to %s:%d established via %s (exit = MASQUE edge)", host, port, proxyHost)
 

@@ -656,8 +656,14 @@ fxvpn giờ dùng nó để chuyển tiếp UDP:
 - **HTTP/HTTPS trackers**: qua SOCKS5 CONNECT (TCP) như trước.
 - **UDP trackers, DHT, DNS**: qua SOCKS5 UDP ASSOCIATE → CONNECT-UDP —
   datagram được đóng gói thành HTTP Datagram capsules trên cùng edge
-  session với TCP (cùng exit IP, cùng pass rotation).
-- WebRTC/QUIC qua CONNECT-UDP cũng đi được trong phạm vi datagram ≤64KB.
+  session với TCP (cùng exit IP, cùng pass rotation). **Hạn chế từ phía
+  Mozilla:** edge trả về `502 Destination IP Prohibited` cho các đích
+  UDP không nằm trong allowlist của họ (dải tracker phổ biến như
+  tracker.opentrackr.org đều bị chặn) — đây là chính sách của edge, log
+  sẽ ghi rõ `edge policy prohibits ...`. TCP trackers và peers vẫn chạy
+  bình thường qua CONNECT.
+- WebRTC/QUIC qua CONNECT-UDP cũng đi được trong phạm vi datagram ≤64KB
+  cho các đích được edge cho phép.
 
 Cấu hình torrent client (qBittorrent) khi dùng fxvpn:
 

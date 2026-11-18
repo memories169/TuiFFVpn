@@ -638,6 +638,10 @@ func HTTP2Dialer(host string, port int, proxyPass string, bearerProvider func() 
 			strings.Contains(err.Error(), "reset") {
 			return m.dialUDPSession(ctx, host, port)
 		}
+		if strings.Contains(err.Error(), "prohibits") {
+			// Edge policy — permanent for this destination, don't retry.
+			return nil, err
+		}
 		return nil, err
 	}
 	// Background keepalive: ping pooled sessions while idle so the server
