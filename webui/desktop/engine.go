@@ -150,6 +150,8 @@ type StatusSnapshot struct {
 	Country   string
 	City      string
 	LastError string
+	WGMode    bool   // transport is WireGuard (not MASQUE)
+	WGTunnel  string // tunnel IPv4 when WG mode
 }
 
 // Accounts returns the account list in display order (active first, then
@@ -179,16 +181,20 @@ func (e *Engine) Accounts() []AccountRow {
 // Status reports the proxy/state summary for the top bar.
 func (e *Engine) Status() StatusSnapshot {
 	s := e.app.StatusSnapshot()
+	wg := e.app.WGStatus()
+	wgMode := wg["connected"] == true
 	return StatusSnapshot{
 		LoggedIn:  s.LoggedIn,
 		Email:     s.Email,
-		Running:   s.Running,
+		Running:   s.Running || wgMode,
 		Listen:    s.Listen,
 		Server:    s.Server,
 		Account:   s.Account,
 		Country:   s.Country,
 		City:      s.City,
 		LastError: s.LastError,
+		WGMode:    wgMode,
+		WGTunnel:  fmt.Sprintf("%v", wg["tunnel_ipv4"]),
 	}
 }
 

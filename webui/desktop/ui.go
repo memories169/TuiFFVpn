@@ -631,13 +631,23 @@ func (u *UI) layoutStatus(gtx layout.Context) layout.Dimensions {
 			layout.Rigid(title.Layout),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions { return layout.Spacer{Height: unit.Dp(14)}.Layout(gtx) }),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				transport := "MASQUE (proxy pass)"
+				transportColor := Text
+				if s.WGMode {
+					transport = "WireGuard (UDP đầy đủ)"
+					transportColor = Green
+				}
 				rows := []statusLine{
 					{"Trạng thái", boolLabel(s.Running, "ĐANG CHẠY", "ĐANG DỪNG"), boolColor(s.Running)},
+					{"Transport", transport, transportColor},
 					{"Account", s.EmailOr("(chưa có)"), Text},
 					{"Máy chủ", s.ServerOr("—"), Text},
 					{"Vị trí", s.LocationOr("—"), Text},
 					{"SOCKS5", statusListen(s), Text},
 					{"Lỗi gần nhất", s.LastErrorOr("không"), Text},
+				}
+				if s.WGMode {
+					rows = append(rows[:1+1], append([]statusLine{{"Tunnel IP", s.WGTunnel, Green}}, rows[2:]...)...)
 				}
 				kids := make([]layout.FlexChild, 0, len(rows))
 				for _, ln := range rows {

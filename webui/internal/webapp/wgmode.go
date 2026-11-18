@@ -211,26 +211,18 @@ func (a *App) StartWGProxy(ctx context.Context, accessToken string, server state
 func (a *App) RestoreWGOnBoot(ctx context.Context) error {
 	a.mu.Lock()
 	sel := a.Store.WGLastServer
-	email := a.Store.Active
 	a.mu.Unlock()
 	if sel == nil || sel.PublicKey == "" {
 		log.Printf("boot: no WireGuard server recorded — skip WG restore")
 		return nil
 	}
-	a.mu.Lock()
-	active := a.Store.ActiveAccount()
-	var access string
-	if active != nil {
-		access = active.AccessToken
+	// Token may be stale after downtime — resolve a fresh one through the
+	// same single-flight gate ConnectWG uses; registration is idempotent.
+	tok, err := a.activeAccessToken(ctx)
+	if err != nil {
+		return fmt.Errorf("wg restore: %w", err)
 	}
-	a.mu.Unlock()
-	if access == "" {
-		return fmt.Errorf("wg restore: no active account")
-	}
-	_ = email
-	// Token may be stale — activeAccessToken refreshes through the normal
-	// gate; registration is idempotent so EnsureWGDevice is safe to re-run.
-	if err := a.ConnectWGWithServer(ctx, access, *sel); err != nil {
+	if err := a.ConnectWGWithServer(ctx, tok, *sel); err != nil {
 		return err
 	}
 	log.Printf("boot: WireGuard tunnel restored on %s (%s:%d)", sel.Hostname, sel.IPv4AddrIn, sel.Port)
