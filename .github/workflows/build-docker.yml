@@ -4,13 +4,11 @@ name: build-docker
 # on tag pushes (v*), and on manual dispatch. PRs build without publishing.
 
 on:
-  # Every push to main publishes the image (the compose deployment flow is
-  # push → CI build → `docker compose pull` — a stale :latest silently
-  # misses new features, which bit the UDP rollout). Tag pushes (v*) publish
-  # versioned tags; manual dispatch and PRs (build-only) also work.
+  # Manual and version-tag builds only — regular commits to main do NOT
+  # publish images. Run from the Actions tab ("Run workflow"); on PRs it
+  # builds without publishing.
   workflow_dispatch:
   push:
-    branches: [main]
     tags: ["v*"]
   pull_request:
     branches: [main]
@@ -80,8 +78,6 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
-          build-args: |
-            VERSION=${{ github.sha }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

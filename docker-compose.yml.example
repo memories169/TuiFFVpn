@@ -19,11 +19,8 @@ services:
     container_name: fxvpn-webui
     restart: unless-stopped
     ports:
-      - "${WEBUI_PORT:-9090}:9090"     # Web console
-      - "${SOCKS_PORT:-1080}:1080"     # SOCKS5 proxy — TCP (CONNECT tunnels, HTTP trackers)
-      - "${SOCKS_PORT:-1080}:1080/udp" # SOCKS5 relay — UDP (udp:// trackers, DHT).
-                                       # REQUIRED: "1080:1080" alone maps TCP only,
-                                       # and client datagrams never reach the relay.
+      - "${WEBUI_PORT:-9090}:9090"   # Web console
+      - "${SOCKS_PORT:-1080}:1080"   # SOCKS5 proxy (starts after you pick a server)
     environment:
       WEBUI_ADDR: ":9090"
       # Bind on all interfaces so the SOCKS5 proxy is reachable from other
