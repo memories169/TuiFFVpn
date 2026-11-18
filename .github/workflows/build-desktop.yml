@@ -324,26 +324,26 @@ jobs:
           needs.macos.result == 'success'
         )
       }}
-      steps:
-        - name: Validate release tag
-          if: github.event_name == 'workflow_dispatch' && inputs.release_kind != 'ci'
-          run: |
-            if [ -z "${{ inputs.release_tag }}" ]; then
-              echo "::error::Please provide a release tag (e.g. v1.0.0)"
-              exit 1
-            fi
+     steps:
+       - name: Validate release tag
+         if: github.event_name == 'workflow_dispatch' && inputs.release_kind != 'ci'
+         run: |
+           if [ -z "${{ inputs.release_tag }}" ]; then
+             echo "::error::Please provide a release tag (e.g. v1.0.0)"
+             exit 1
+           fi
 
-        - name: Download all artifacts
-          uses: actions/download-artifact@v4
-          with:
-            path: dist
-            merge-multiple: true
+       - name: Download all artifacts
+         uses: actions/download-artifact@v4
+         with:
+           path: dist
+           merge-multiple: true
 
-        - name: Attach to release
-          uses: softprops/action-gh-release@v2
-          with:
-            tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag != '' && inputs.release_tag || github.ref_name }}
-            target_commitish: ${{ github.sha }}
-            files: dist/*
-            generate_release_notes: true
-            prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.release_kind == 'pre-release' }}
+       - name: Attach to release
+         uses: softprops/action-gh-release@v2
+         with:
+           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag != '' && inputs.release_tag || github.ref_name }}
+           target_commitish: ${{ github.sha }}
+           files: dist/*
+           generate_release_notes: true
+           prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.release_kind == 'pre-release' }}
