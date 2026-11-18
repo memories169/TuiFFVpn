@@ -338,6 +338,16 @@ func (e *Engine) Connect(ctx context.Context, loc Location) error {
 	return e.app.SelectAndStart(ctx, loc.Country, loc.Country, loc.City, loc.City, loc.Host, loc.Port)
 }
 
+// ConnectWG brings the WireGuard tunnel up over the active account (device
+// registration happens transparently on first use).
+func (e *Engine) ConnectWG(ctx context.Context) error { return e.app.ConnectWG(ctx) }
+
+// StopWG tears the WireGuard tunnel down.
+func (e *Engine) StopWG() { e.app.StopWG() }
+
+// WGStatus is a read-only snapshot for the UI.
+func (e *Engine) WGStatus() map[string]any { return e.app.WGStatus() }
+
 // GuardianPassPeek is a read-only peek at the live proxy pass diagnostics.
 func (e *Engine) GuardianPassPeek() (rawToken string, expires time.Time) {
 	p := e.app.LivePass()

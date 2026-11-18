@@ -178,11 +178,23 @@ func (a *App) restoreSelectedOnBoot() {
 	sel := a.Store.Selected
 	hasAccount := a.Store.ActiveAccount() != nil
 	lastPass := a.Store.LastPass
+	lastWG := a.Store.WGLastServer
 	a.mu.Unlock()
 
 	if !hasAccount {
 		log.Printf("boot: no account yet — skip proxy restore (add an account via the userscript)")
 		return
+	}
+	// WG mode was the last-used transport: restore the WireGuard tunnel
+	// (device + server are persisted; no pass renewal involved).
+	if lastWG != nil && lastWG.PublicKey != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		if err := a.RestoreWGOnBoot(ctx); err != nil {
+			log.Printf("boot: WireGuard restore failed: %v — falling back to MASQUE", err)
+		} else {
+			return
+		}
 	}
 	if sel.ServerHost == "" || sel.ServerPort == 0 {
 		log.Printf("boot: no server selected yet — skip proxy restore")

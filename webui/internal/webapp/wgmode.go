@@ -159,6 +159,53 @@ func (a *App) StartWGProxy(ctx context.Context, accessToken string, server state
 	return nil
 }
 
+// RestoreWGOnBoot re-establishes the WireGuard tunnel from the persisted
+// device + last server — no pass renewal needed (WG device keys don't
+// expire; the tunnel key is the device key). Called from startRotator's
+// boot path when WG mode was the last-used transport.
+func (a *App) RestoreWGOnBoot(ctx context.Context) error {
+	a.mu.Lock()
+	sel := a.Store.WGLastServer
+	email := a.Store.Active
+	a.mu.Unlock()
+	if sel == nil || sel.PublicKey == "" {
+		log.Printf("boot: no WireGuard server recorded — skip WG restore")
+		return nil
+	}
+	a.mu.Lock()
+	active := a.Store.ActiveAccount()
+	var access string
+	if active != nil {
+		access = active.AccessToken
+	}
+	a.mu.Unlock()
+	if access == "" {
+		return fmt.Errorf("wg restore: no active account")
+	}
+	_ = email
+	// Token may be stale — activeAccessToken refreshes through the normal
+	// gate; registration is idempotent so EnsureWGDevice is safe to re-run.
+	if err := a.ConnectWGWithServer(ctx, access, *sel); err != nil {
+		return err
+	}
+	log.Printf("boot: WireGuard tunnel restored on %s (%s:%d)", sel.Hostname, sel.IPv4AddrIn, sel.Port)
+	return nil
+}
+
+// ConnectWGWithServer is ConnectWG pinned to a specific server.
+func (a *App) ConnectWGWithServer(ctx context.Context, accessToken string, server state.WGServerInfo) error {
+	if _, err := a.EnsureWGDevice(ctx, accessToken); err != nil {
+		return fmt.Errorf("wg: device: %w", err)
+	}
+	a.mu.Lock()
+	if a.edgeDialer != nil {
+		a.edgeDialer.Close()
+		a.edgeDialer = nil
+	}
+	a.mu.Unlock()
+	return a.StartWGProxy(ctx, accessToken, server)
+}
+
 // StopWG tears the WireGuard tunnel down (the SOCKS5 listener dies with it).
 func (a *App) StopWG() {
 	a.mu.Lock()

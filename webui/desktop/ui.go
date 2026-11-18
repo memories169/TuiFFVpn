@@ -111,6 +111,10 @@ type UI struct {
 
 	// test tab
 	testBtn   widget.Clickable
+	wgConnect widget.Clickable
+	wgStop    widget.Clickable
+	wgBusy    bool
+	wgStatus  string
 	testRes   *webapp.TestResult
 	logsEdit  widget.Editor
 	logsCopy  widget.Clickable
@@ -285,6 +289,29 @@ func (u *UI) handleClicks() {
 	// Test tab.
 	if u.testBtn.Clicked(u.frameCtx) && !u.testBusy {
 		go u.doTest()
+	}
+	// WireGuard.
+	if u.wgConnect.Clicked(u.frameCtx) && !u.wgBusy {
+		u.wgBusy = true
+		u.wgStatus = "⏳ Đang đăng ký device + kết nối…"
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			defer cancel()
+			err := u.engine.ConnectWG(ctx)
+			u.events <- func() {
+				u.wgBusy = false
+				if err != nil {
+					u.wgStatus = "❌ " + err.Error()
+				} else {
+					st := u.engine.WGStatus()
+					u.wgStatus = fmt.Sprintf("✅ WireGuard đã kết nối — tunnel %v", st["tunnel_ipv4"])
+				}
+			}
+		}()
+	}
+	if u.wgStop.Clicked(u.frameCtx) && !u.wgBusy {
+		u.engine.StopWG()
+		u.wgStatus = "⏹ Đã ngắt WireGuard"
 	}
 }
 
@@ -1109,6 +1136,17 @@ func (u *UI) locationRow(gtx layout.Context, i int) layout.Dimensions {
 func (u *UI) layoutTest(gtx layout.Context) layout.Dimensions {
 	return layout.UniformInset(unit.Dp(16)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			// WireGuard card — full-UDP tunnel mode.
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return u.layoutWGCard(gtx)
+			}),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions { return layout.Spacer{Height: unit.Dp(18)}.Layout(gtx) }),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				title := material.Body1(u.th(), "Test đường truyền")
+				title.Color = Mauve
+				return title.Layout(gtx)
+			}),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions { return layout.Spacer{Height: unit.Dp(8)}.Layout(gtx) }),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				btn := material.Button(u.th(), &u.testBtn, "Chạy test exit IP")
 				btn.Background = Sapphire
@@ -1128,6 +1166,63 @@ func (u *UI) layoutTest(gtx layout.Context) layout.Dimensions {
 					return t.Layout(gtx)
 				}
 				return u.testResultView(gtx, *u.testRes)
+			}),
+		)
+	})
+}
+
+// layoutWGCard renders the WireGuard connect/stop controls + status.
+func (u *UI) layoutWGCard(gtx layout.Context) layout.Dimensions {
+	background(gtx, withAlpha(Mauve, 18))
+	return layout.UniformInset(unit.Dp(14)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		title := material.Body1(u.th(), "WireGuard — UDP đầy đủ (device Guardian)")
+		title.Color = Mauve
+		hint := material.Body2(u.th(), "Tunnel WireGuard thật (userspace): udp:// trackers và DHT hoạt động, không bị edge chặn như đường MASQUE.")
+		hint.Color = Overlay2
+
+		connectLabel := "🔌 Kết nối WireGuard"
+		if u.wgBusy {
+			connectLabel = "⏳ Đang kết nối…"
+		}
+		connectBtn := material.Button(u.th(), &u.wgConnect, connectLabel)
+		connectBtn.Background = Lavender
+		connectBtn.Color = Crust
+		connectBtn.TextSize = unit.Sp(12.5)
+		stopBtn := material.Button(u.th(), &u.wgStop, "⏹ Ngắt")
+		stopBtn.Background = Surface1
+		stopBtn.Color = Text
+		stopBtn.TextSize = unit.Sp(12.5)
+
+		statusText := u.wgStatus
+		if statusText == "" {
+			st := u.engine.WGStatus()
+			if st["connected"] == true {
+				statusText = fmt.Sprintf("✅ Đã kết nối — tunnel %v", st["tunnel_ipv4"])
+			} else if st["available"] == true {
+				statusText = fmt.Sprintf("Device đã đăng ký: %v (%v) — chưa kết nối", st["device"], st["ipv4"])
+			} else {
+				statusText = "Chưa đăng ký device — bấm Kết nối để đăng ký với Guardian."
+			}
+		}
+		status := material.Body2(u.th(), statusText)
+		status.Color = Subtext0
+
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(title.Layout),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.UniformInset(unit.Dp(2)).Layout(gtx, hint.Layout)
+			}),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+					layout.Rigid(connectBtn.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return layout.Spacer{Width: unit.Dp(10)}.Layout(gtx)
+					}),
+					layout.Rigid(stopBtn.Layout),
+				)
+			}),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.UniformInset(unit.Dp(4)).Layout(gtx, status.Layout)
 			}),
 		)
 	})
