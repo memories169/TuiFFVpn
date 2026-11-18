@@ -15,8 +15,11 @@
 package webapp
 
 import (
+	"context"
 	"encoding/json"
+	"log"
 	"net/http"
+	"time"
 )
 
 // handleLogs serves the engine log ring (oldest first) as JSON — the same
@@ -27,6 +30,37 @@ func (a *App) handleLogs(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{
 		"lines": LogSnapshot(),
 	})
+}
+
+// handleWGConnect brings the WireGuard tunnel up (replacing the MASQUE
+// backend) — POST only.
+func (a *App) handleWGConnect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+	if err := a.ConnectWG(ctx); err != nil {
+		log.Printf("webui: WG connect failed: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"ok": true, "status": a.WGStatus()})
+}
+
+// handleWGStop tears the WireGuard tunnel down.
+func (a *App) handleWGStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	a.StopWG()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
 // handleLogsClear empties the log ring.

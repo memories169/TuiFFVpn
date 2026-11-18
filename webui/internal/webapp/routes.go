@@ -16,6 +16,7 @@ package webapp
 
 import (
 	"embed"
+	"encoding/json"
 	"io/fs"
 	"net/http"
 )
@@ -60,6 +61,13 @@ func (a *App) Routes() http.Handler {
 	// a clear button. Auth like every other admin route.
 	mux.HandleFunc("/api/logs", a.requireAuth(a.handleLogs))
 	mux.HandleFunc("/api/logs/clear", a.requireAuth(a.handleLogsClear))
+	// WireGuard mode: connect/stop/status (auth like everything else).
+	mux.HandleFunc("/api/wg/connect", a.requireAuth(a.handleWGConnect))
+	mux.HandleFunc("/api/wg/stop", a.requireAuth(a.handleWGStop))
+	mux.HandleFunc("/api/wg/status", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(a.WGStatus())
+	}))
 
 	// Serve the embedded UI. no-store is deliberate: embed.FS files carry
 	// no modtime, so http.FileServer emits no Last-Modified/ETag — without

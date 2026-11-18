@@ -101,7 +101,7 @@ func DeviceName() string { return "fxvpn " + runtime.GOOS }
 
 // StartWGProxy connects the WireGuard tunnel to the given server and serves
 // SOCKS5 through it. a.mu must NOT be held.
-func (a *App) StartWGProxy(ctx context.Context, accessToken string, server WGServer) error {
+func (a *App) StartWGProxy(ctx context.Context, accessToken string, server state.WGServerInfo) error {
 	st, err := a.EnsureWGDevice(ctx, accessToken)
 	if err != nil {
 		return err
@@ -125,6 +125,8 @@ func (a *App) StartWGProxy(ctx context.Context, accessToken string, server WGSer
 		a.wgTunnel.Close()
 	}
 	a.wgTunnel = tun
+	a.Store.WGLastServer = &server
+	_ = a.Store.Save()
 	if a.proxySrv != nil {
 		a.proxySrv.Close()
 		a.proxySrv = nil
@@ -169,19 +171,9 @@ func (a *App) StopWG() {
 	}
 }
 
-// WGServer is one WireGuard-capable server from Guardian /api/v1/vpn/servers.
-type WGServer struct {
-	Hostname    string `json:"hostname"`
-	IPv4AddrIn  string `json:"ipv4_addr_in"`
-	IPv6AddrIn  string `json:"ipv6_addr_in"`
-	PublicKey   string `json:"public_key"`
-	Port        int    `json:"port"`
-	Weight      int    `json:"weight"`
-}
-
 // ParseWGServers extracts the flat server list from the Guardian response
 // ({"countries":[{name, code, cities:[{servers:[...]}]}]}).
-func ParseWGServers(raw json.RawMessage) ([]WGServer, error) {
+func ParseWGServers(raw json.RawMessage) ([]state.WGServerInfo, error) {
 	var doc struct {
 		Countries []struct {
 			Name   string `json:"name"`
@@ -189,14 +181,14 @@ func ParseWGServers(raw json.RawMessage) ([]WGServer, error) {
 			Cities []struct {
 				Name    string `json:"name"`
 				Code    string `json:"code"`
-				Servers []WGServer `json:"servers"`
+				Servers []state.WGServerInfo `json:"servers"`
 			} `json:"cities"`
 		} `json:"countries"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, err
 	}
-	var out []WGServer
+	var out []state.WGServerInfo
 	for _, c := range doc.Countries {
 		for _, city := range c.Cities {
 			out = append(out, city.Servers...)

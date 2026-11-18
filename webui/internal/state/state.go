@@ -112,11 +112,23 @@ type Store struct {
 	// works. Without it, a restart on an edge-hostile network could not
 	// open the tunnel at all until the user re-pushed from the userscript.
 	LastPass PersistedPass `json:"last_pass,omitempty"`
+	// WGLastServer records the WireGuard server last used (like Selected for
+	// MASQUE) so the boot restore can reconnect the WG tunnel.
+	WGLastServer *WGServerInfo `json:"wg_last_server,omitempty"`
 	// WGDevice is the WireGuard device identity registered with Guardian
 	// (base64 keypair + assigned tunnel IPs + the account email it belongs
 	// to). Registered once per account via POST /api/v1/vpn/device; with it,
 	// the WireGuard tunnel (full UDP) becomes available alongside MASQUE.
 	WGDevice *WGDeviceState `json:"wg_device,omitempty"`
+}
+
+// WGServerInfo is a flattened WireGuard server endpoint.
+type WGServerInfo struct {
+	Hostname   string `json:"hostname"`
+	IPv4AddrIn string `json:"ipv4_addr_in"`
+	PublicKey  string `json:"public_key"`
+	Port       int    `json:"port"`
+	Weight     int    `json:"weight,omitempty"` // load-balancing weight (Guardian)
 }
 
 // WGDeviceState persists the registered WireGuard device.

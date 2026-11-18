@@ -111,6 +111,14 @@
     <!-- Tab: Settings -->
     <section id="tab-settings" class="tabpanel hidden">
       <div class="card">
+        <h2>WireGuard (UDP đầy đủ)</h2>
+        <p class="muted">Đăng ký device với Guardian và chạy tunnel WireGuard thật (userspace, không cần admin). UDP trackers/DHT hoạt động — khác đường MASQUE vốn bị edge chặn UDP cho hầu hết đích.</p>
+        <p id="wg-status" class="muted">Đang tải trạng thái…</p>
+        <button id="wg-connect" type="button">🔌 Kết nối WireGuard</button>
+        <button id="wg-stop" type="button" class="small">⏹ Ngắt</button>
+        <p id="wg-error" class="error"></p>
+      </div>
+      <div class="card">
         <h2>Giao diện</h2>
         <p class="muted">Giao diện cố định theo theme Catppuccin Macchiato (giống app desktop).</p>
       </div>

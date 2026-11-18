@@ -45,6 +45,40 @@ function showApp() {
   loadCountries();
   bindSettings();
   bindLogs();
+  bindWG();
+}
+
+// ---- WireGuard mode ----
+async function refreshWG() {
+  const st = await api('wg/status');
+  const el = $('wg-status');
+  if (!st.available) {
+    el.textContent = 'Chưa đăng ký device — bấm "Kết nối WireGuard" để đăng ký với Guardian.';
+    return;
+  }
+  el.textContent = st.connected
+    ? `✅ WireGuard đã kết nối — tunnel ${st.tunnel_ipv4} (device: ${st.device}, account: ${st.email})`
+    : `Device đã đăng ký: ${st.device} (tunnel ${st.ipv4}) — chưa kết nối.`;
+}
+
+function bindWG() {
+  $('wg-connect').addEventListener('click', async () => {
+    $('wg-error').textContent = '';
+    $('wg-connect').disabled = true;
+    $('wg-connect').textContent = '⏳ Đang kết nối…';
+    try {
+      const res = await api('wg/connect', 'POST');
+      if (!res.ok) { $('wg-error').textContent = res.error || 'Kết nối thất bại'; }
+    } catch (e) { $('wg-error').textContent = String(e); }
+    $('wg-connect').disabled = false;
+    $('wg-connect').textContent = '🔌 Kết nối WireGuard';
+    refreshWG();
+  });
+  $('wg-stop').addEventListener('click', async () => {
+    await api('wg/stop', 'POST');
+    refreshWG();
+  });
+  refreshWG();
 }
 
 // ---- Logs tab ----
