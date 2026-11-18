@@ -57,6 +57,9 @@ type Server struct {
 	// DialUDP opens a UDP relay session to host:port through the VPN
 	// (CONNECT-UDP over MASQUE). Nil disables UDP ASSOCIATE.
 	DialUDP func(ctx context.Context, host string, port int) (net.Conn, error)
+	// UDPEndpoint describes the MASQUE edge the UDP relay dials through
+	// (for diagnostics only).
+	UDPEndpoint func() (host string, port int)
 	// Auth validates SOCKS5 user/pass; nil disables.
 	Auth func(user, pass string) bool
 	// Timeout bounds upstream dials.
@@ -65,6 +68,23 @@ type Server struct {
 	mu     sync.Mutex
 	closed bool
 	ln     net.Listener
+}
+
+// udpHost/udpPort are diagnostic helpers for the ASSOCIATE log line.
+func (s *Server) udpHost() string {
+	if s.UDPEndpoint == nil {
+		return "?"
+	}
+	h, _ := s.UDPEndpoint()
+	return h
+}
+
+func (s *Server) udpPort() int {
+	if s.UDPEndpoint == nil {
+		return 0
+	}
+	_, p := s.UDPEndpoint()
+	return p
 }
 
 // ListenAndServe serves SOCKS5 until Close.
@@ -164,6 +184,8 @@ func (s *Server) handle(conn net.Conn) {
 			conn.Write([]byte{5, 1, 0, 1, 0, 0, 0, 0, 0, 0}) // general failure
 			return
 		}
+		log.Printf("proxy: UDP ASSOCIATE opened for %s — relay on %s (datagrams now go via CONNECT-UDP through %s)",
+			conn.RemoteAddr(), udpSrv.addr, net.JoinHostPort(s.udpHost(), fmt.Sprint(s.udpPort())))
 		defer udpSrv.close()
 		// Reply: BND.ADDR = relay listen IP (0.0.0.0 = use the connection's
 		// destination address per RFC), BND.PORT = relay UDP port.

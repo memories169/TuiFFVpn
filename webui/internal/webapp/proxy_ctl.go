@@ -96,6 +96,7 @@ func (a *App) startProxy(host string, port int, bearer string, passExpiry time.T
 		Listen:  a.ProxyAddr,
 		Dial:    a.edgeDialer.Dial,
 		DialUDP: a.edgeDialer.DialUDP,
+		UDPEndpoint: func() (string, int) { return host, port },
 	}
 	a.proxySrv = srv
 	go func() {

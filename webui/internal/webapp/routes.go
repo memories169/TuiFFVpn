@@ -56,6 +56,10 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("/api/select", a.requireAuth(a.handleSelect))
 	mux.HandleFunc("/api/status", a.requireAuth(a.handleStatus))
 	mux.HandleFunc("/api/test", a.requireAuth(a.handleTest))
+	// Logs tab: the engine ring buffer (same lines docker logs prints) +
+	// a clear button. Auth like every other admin route.
+	mux.HandleFunc("/api/logs", a.requireAuth(a.handleLogs))
+	mux.HandleFunc("/api/logs/clear", a.requireAuth(a.handleLogsClear))
 
 	// Serve the embedded UI.
 	sub, err := fs.Sub(staticFS, "static")

@@ -43,6 +43,40 @@ function showApp() {
   loadAccounts();
   loadCountries();
   bindSettings();
+  bindLogs();
+}
+
+// ---- Logs tab ----
+let logsTimer = null;
+
+async function refreshLogs() {
+  const res = await api('logs');
+  const lines = res.lines || [];
+  const el = $('logs-output');
+  el.textContent = lines.length ? lines.join('\n') : '(chưa có log)';
+  $('logs-count').textContent = lines.length ? `— ${lines.length} dòng` : '';
+  el.scrollTop = el.scrollHeight;
+}
+
+function bindLogs() {
+  if (logsTimer) return;
+  logsTimer = setInterval(() => {
+    if (!$('tab-logs').classList.contains('hidden')) refreshLogs();
+  }, 3000);
+  $('logs-refresh').addEventListener('click', refreshLogs);
+  $('logs-clear').addEventListener('click', async () => {
+    await api('logs/clear', 'POST');
+    refreshLogs();
+  });
+  $('logs-copy').addEventListener('click', async () => {
+    const res = await api('logs');
+    try {
+      await navigator.clipboard.writeText((res.lines || []).join('\n'));
+      $('logs-copy').textContent = '✅ Đã copy';
+      setTimeout(() => { $('logs-copy').textContent = '📋 Copy'; }, 1500);
+    } catch (e) { /* clipboard unavailable */ }
+  });
+  refreshLogs();
 }
 
 // ---- Tabs ----

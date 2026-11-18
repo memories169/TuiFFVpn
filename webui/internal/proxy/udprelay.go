@@ -103,7 +103,7 @@ func readCapsule(r io.Reader) (dtype byte, payload []byte, err error) {
 
 // writeCapsule writes one HTTP Datagram capsule.
 func writeCapsule(w io.Writer, dtype byte, payload []byte) error {
-	// Variable-length int: payloads < 16384 fit in 2 bytes; bigger use 4.
+	// Variable-length int (RFC 9000 §16): 1/2/4-byte forms.
 	var hdr []byte
 	switch {
 	case len(payload) < 64:
@@ -113,10 +113,13 @@ func writeCapsule(w io.Writer, dtype byte, payload []byte) error {
 	default:
 		hdr = []byte{dtype, 0x40 | byte(len(payload)>>16), byte(len(payload) >> 8), byte(len(payload))}
 	}
-	if _, err := w.Write(hdr); err != nil {
-		return err
-	}
-	_, err := w.Write(payload)
+	// ONE write: header+payload must land as a unit — splitting into two
+	// writes can produce two TCP segments, and a gateway reading one
+	// segment at a time would see a bare capsule header with no payload.
+	out := make([]byte, 0, len(hdr)+len(payload))
+	out = append(out, hdr...)
+	out = append(out, payload...)
+	_, err := w.Write(out)
 	return err
 }
 
@@ -256,9 +259,12 @@ func (m *MasqueDialer) dialUDPSession(ctx context.Context, host string, port int
 		resp.Body.Close()
 		pw.Close()
 		release()
+		log.Printf("proxy: UDP CONNECT-UDP to %s:%d FAILED — edge answered HTTP %d: %s",
+			host, port, resp.StatusCode, strings.TrimSpace(string(body[:n])))
 		return nil, fmt.Errorf("%w: edge answered HTTP %d for %s: %s",
 			ErrUDPSession, resp.StatusCode, dst, strings.TrimSpace(string(body[:n])))
 	}
+	log.Printf("proxy: UDP CONNECT-UDP session to %s:%d established via %s (exit = MASQUE edge)", host, port, proxyHost)
 
 	tc := &http2TunnelConn{
 		reader:  resp.Body,
@@ -332,6 +338,9 @@ func (u *sockUDPProxy) serve(control net.Conn, srv *Server) {
 			u.mu.Lock()
 			u.lastSrc[key] = src
 			u.mu.Unlock()
+			if !u.hasSession(key) {
+				log.Printf("proxy: UDP datagram %d bytes → %s:%d (first for this dst — opening CONNECT-UDP session)", len(payload), host, port)
+			}
 			sess, err := u.sessionFor(host, port)
 			if err != nil {
 				log.Printf("proxy: UDP relay %s:%d session: %v", host, port, err)
@@ -350,6 +359,14 @@ func (u *sockUDPProxy) serve(control net.Conn, srv *Server) {
 	// Block until the control connection closes (association lifetime).
 	io.Copy(io.Discard, control)
 	u.close()
+}
+
+// hasSession reports whether a CONNECT-UDP session for dst already exists.
+func (u *sockUDPProxy) hasSession(key string) bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	_, ok := u.conns[key]
+	return ok
 }
 
 // sessionFor returns (and lazily creates) the CONNECT-UDP session for dst.
@@ -394,9 +411,11 @@ func (u *sockUDPProxy) pumpResponses(key string, sess net.Conn) {
 	for {
 		n, err := sess.Read(buf)
 		if err != nil {
+			log.Printf("proxy: UDP relay %s response pump ended: %v", key, err)
 			u.dropSession(key)
 			return
 		}
+		log.Printf("proxy: UDP relay %s response %d bytes → client", key, n)
 		u.mu.Lock()
 		src := u.lastSrc[key]
 		u.mu.Unlock()

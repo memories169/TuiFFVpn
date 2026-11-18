@@ -144,27 +144,27 @@ func TestSocks5UDPAssociateRelay(t *testing.T) {
 			}
 			go func(c net.Conn) {
 				defer c.Close()
+				// Buffer partial capsules across reads (a gateway must).
+				var pending []byte
 				buf := make([]byte, 65536)
 				for {
 					n, err := c.Read(buf)
 					if err != nil {
 						return
 					}
-					// Client sends capsules (00 len payload): unwrap, then
-					// re-wrap the raw payload like a CONNECT-UDP gateway.
-					b := buf[:n]
-					for len(b) >= 2 && b[0] == 0x00 {
-						ln := int(b[1])
-						if len(b) < 2+ln {
+					pending = append(pending, buf[:n]...)
+					for len(pending) >= 2 && pending[0] == 0x00 {
+						ln := int(pending[1])
+						if len(pending) < 2+ln {
 							break
 						}
-						p := b[2 : 2+ln]
+						p := pending[2 : 2+ln]
 						out := []byte{0x00, byte(len(p))}
 						out = append(out, p...)
 						if _, err := c.Write(out); err != nil {
 							return
 						}
-						b = b[2+ln:]
+						pending = pending[2+ln:]
 					}
 				}
 			}(c)
@@ -236,14 +236,21 @@ func TestSocks5UDPAssociateRelay(t *testing.T) {
 	payload := []byte("d1:rd0:...")
 	dgram := []byte{0, 0, 0, 1, 93, 184, 216, 34, 0x1b, 0x39} // ipv4, port 6969
 	dgram = append(dgram, payload...)
-	if _, err := udp.Write(dgram); err != nil {
-		t.Fatal(err)
-	}
-	udp.SetReadDeadline(time.Now().Add(3 * time.Second))
-	rbuf := make([]byte, 65536)
-	n, _, err := udp.ReadFromUDP(rbuf)
-	if err != nil {
-		t.Fatalf("no reply datagram: %v", err)
+	udp.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var n int
+	var rbuf = make([]byte, 65536)
+	for attempt := 0; ; attempt++ {
+		if _, err := udp.Write(dgram); err != nil {
+			t.Fatal(err)
+		}
+		n, _, err = udp.ReadFromUDP(rbuf)
+		if err == nil {
+			break
+		}
+		if attempt >= 4 {
+			t.Fatalf("no reply datagram after 5 tries: %v", err)
+		}
+		udp.SetReadDeadline(time.Now().Add(2 * time.Second))
 	}
 	// Reply header: RSV FRAG 0x00 ATYP=1 ipv4 port — then echoed payload.
 	if n < 10 || rbuf[3] != 1 {

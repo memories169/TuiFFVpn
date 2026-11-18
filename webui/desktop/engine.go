@@ -93,7 +93,7 @@ func DefaultProxyAddr() string {
 // background loops — token keeper and rotator included, exactly like the web
 // console boot.
 func NewEngine(statePath, proxyAddr string) (*Engine, error) {
-	InstallLogCapture()
+	webapp.InstallLogCapture()
 	if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {
 		return nil, fmt.Errorf("create state dir: %w", err)
 	}
@@ -107,13 +107,13 @@ func NewEngine(statePath, proxyAddr string) (*Engine, error) {
 }
 
 // RecentLogs returns the captured engine log lines (oldest first) for the
-// Logs tab.
+// Logs tab. The ring now lives in webapp (shared with the docker console).
 func (e *Engine) RecentLogs() string {
-	return strings.Join(ring.Snapshot(), "\n")
+	return strings.Join(webapp.LogSnapshot(), "\n")
 }
 
 // ClearLogs empties the log ring.
-func (e *Engine) ClearLogs() { ring.Clear() }
+func (e *Engine) ClearLogs() { webapp.LogClear() }
 
 // guardianEndpoint honors GUARDIAN_ENDPOINT for staging/testing.
 func guardianEndpoint() string {

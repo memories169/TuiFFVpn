@@ -102,6 +102,7 @@ func (a *App) SetIngestKey(key string) error {
 
 // New builds an App.
 func New(st *state.Store, guardianEndpoint, proxyAddr string) *App {
+	InstallLogCapture()
 	app := &App{Store: st, Guardian: guardianEndpoint, ProxyAddr: proxyAddr, sessions: newSessionStore()}
 	app.startRotator()
 	return app

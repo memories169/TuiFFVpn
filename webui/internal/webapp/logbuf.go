@@ -1,4 +1,4 @@
-// fxvpn-desktop — native Linux GUI for the Firefox VPN console.
+// fxvpn-webui — unofficial Firefox VPN client console.
 // Copyright (C) 2026
 //
 // This program is free software: you can redistribute it and/or modify
@@ -12,7 +12,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-package desktop
+package webapp
 
 // Ring-buffer capture of the standard log package. Everything the engine
 // (webapp.App: keeper, rotator, healing chain, edge diagnostics) logs via
@@ -89,7 +89,14 @@ func (r *logRing) Clear() {
 var ring = newLogRing(500)
 
 // InstallLogCapture routes the standard log package into the ring (and
-// still prints to stderr so CLI/debug output is unaffected).
+// still prints to stderr so CLI/debug output is unaffected). Called by the
+// desktop engine at boot; the web console calls it from New.
 func InstallLogCapture() {
 	log.SetOutput(io.MultiWriter(os.Stderr, ring))
 }
+
+// LogSnapshot returns the buffered lines, oldest first (web console API).
+func LogSnapshot() []string { return ring.Snapshot() }
+
+// LogClear empties the ring (web console API).
+func LogClear() { ring.Clear() }

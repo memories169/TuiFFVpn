@@ -33,6 +33,7 @@
         <button class="tab active" data-tab="accounts">Quản lý account</button>
         <button class="tab" data-tab="location">Chọn location</button>
         <button class="tab" data-tab="settings">Cài đặt</button>
+        <button class="tab" data-tab="logs">Logs</button>
       </nav>
       <button id="logout" class="ghost">Đăng xuất</button>
     </header>
@@ -125,6 +126,20 @@
           <button type="submit">Đổi mật khẩu</button>
         </form>
         <p id="pass-error" class="error"></p>
+      </div>
+    </section>
+
+    <!-- Tab: Logs -->
+    <section id="tab-logs" class="tabpanel hidden">
+      <div class="card">
+        <h2>Engine logs <span id="logs-count" class="muted"></span></h2>
+        <p class="muted">Toàn bộ log của engine (giống `docker logs`) — bao gồm kết nối SOCKS5, UDP ASSOCIATE, CONNECT-UDP session, pass renewal. Tự làm mới mỗi 3s.</p>
+        <div class="account-actions">
+          <button id="logs-refresh" type="button" class="small">🔄 Làm mới</button>
+          <button id="logs-clear" type="button" class="small">🗑 Xoá log</button>
+          <button id="logs-copy" type="button" class="small">📋 Copy</button>
+        </div>
+        <pre id="logs-output" class="status logs-output">Đang tải…</pre>
       </div>
     </section>
   </section>
