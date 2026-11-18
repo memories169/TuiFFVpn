@@ -439,10 +439,14 @@ cp .env.example .env
 # set FXVPN_INGEST_KEY (openssl rand -hex 24) and match it in the userscript
 $EDITOR .env
 
+docker compose pull   # always fetch the freshly-published image (CI builds
+                      # on EVERY push to main; the page title shows the SHA)
 docker compose up -d
 # then open http://localhost:9090 (default admin password: admin — change it
 # in the Cài đặt tab on first login)
-```
+
+Tracked by version: the console page title shows the image's build SHA —
+if it doesn't change after `pull`, the image didn't update.
 
 To build the image yourself instead, remove the `image:` line's GHCR value
 and add `build: .` to the service in your `docker-compose.yml` (requires
