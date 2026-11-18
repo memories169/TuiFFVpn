@@ -61,10 +61,35 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("/api/logs", a.requireAuth(a.handleLogs))
 	mux.HandleFunc("/api/logs/clear", a.requireAuth(a.handleLogsClear))
 
-	// Serve the embedded UI.
-	sub, err := fs.Sub(staticFS, "static")
-	if err == nil {
-		mux.Handle("/", http.FileServer(http.FS(sub)))
-	}
+	// Serve the embedded UI. no-store is deliberate: embed.FS files carry
+	// no modtime, so http.FileServer emits no Last-Modified/ETag — without
+	// an explicit directive browsers heuristically cache app.js/index.html
+	// and keep running the PREVIOUS build's UI after an image update (the
+	// new tab appears but its JS is stale — the Logs tab stuck at its
+	// loading placeholder was exactly this).
+	mux.Handle("/", noCache(http.FileServer(http.FS(staticSub()))))
 	return mux
+}
+
+// staticSub returns the embedded static tree (or a safe empty FS on the
+// impossible embed failure).
+func staticSub() fs.FS {
+	sub, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		return emptyFS{}
+	}
+	return sub
+}
+
+type emptyFS struct{}
+
+func (emptyFS) Open(string) (fs.File, error) { return nil, fs.ErrNotExist }
+
+// noCache strips any caching: the console UI must always match the binary.
+func noCache(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		next.ServeHTTP(w, r)
+	})
 }
