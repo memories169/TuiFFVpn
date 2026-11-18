@@ -661,6 +661,10 @@ fxvpn giờ dùng nó để chuyển tiếp UDP:
 
 Cấu hình torrent client (qBittorrent) khi dùng fxvpn:
 
+0. **Docker**: compose file phải map cả UDP — `"1080:1080/udp"`. Mapping
+   `"1080:1080"` thường chỉ forward TCP: datagram của client không bao giờ
+   tới container (dấu hiệu: log có `UDP ASSOCIATE opened` nhưng không bao
+   giờ có `UDP datagram ... → tracker`).
 1. Tools → Options → Connection → Proxy server: `SOCKS5`, `127.0.0.1:1080`;
    tick **"Use proxy for peer connections"** — để toàn bộ traffic (kể cả
    UDP) đi qua tunnel, không rò IP thật.
