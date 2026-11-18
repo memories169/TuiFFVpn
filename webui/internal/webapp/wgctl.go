@@ -51,7 +51,10 @@ func (a *App) ConnectWG(ctx context.Context) error {
 		return fmt.Errorf("wg: server: %w", err)
 	}
 
-	// Tear the MASQUE transport down and stand the WG one up.
+	// Tear the MASQUE transport down and stand the WG one up. If the WG
+	// start fails AFTER the teardown, restore the MASQUE backend so the
+	// user is never left without a tunnel (TCP was working; losing it
+	// because UDP failed would be a downgrade).
 	a.mu.Lock()
 	if a.edgeDialer != nil {
 		a.edgeDialer.Close()
@@ -60,6 +63,15 @@ func (a *App) ConnectWG(ctx context.Context) error {
 	a.mu.Unlock()
 
 	if err := a.StartWGProxy(ctx, tok, server); err != nil {
+		log.Printf("wg: tunnel start failed — restoring MASQUE backend: %v", err)
+		a.mu.Lock()
+		sel := a.Store.Selected
+		a.mu.Unlock()
+		if sel.ServerHost != "" && sel.ServerPort != 0 {
+			if rerr := a.restartProxyOnActive(ctx, sel.ServerHost, sel.ServerPort); rerr != nil {
+				log.Printf("wg: MASQUE restore also failed: %v (restart from the UI)", rerr)
+			}
+		}
 		return err
 	}
 	log.Printf("wg: connected — device %s, tunnel %s, server %s (%s:%d)",
