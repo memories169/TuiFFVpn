@@ -433,6 +433,10 @@ func (c *Client) RegisterDevice(ctx context.Context, name, uniqueID, publicKey s
 	if err != nil {
 		return nil, err
 	}
+	if c.HTTP == nil {
+		// Same lazy init as doFull: browser-fingerprint uTLS transport.
+		c.HTTP = &http.Client{Timeout: 60 * time.Second, Transport: edgehttp.Transport()}
+	}
 	reqURL := c.endpoint() + "/api/v1/vpn/device"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(payload))
 	if err != nil {
