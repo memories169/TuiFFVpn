@@ -78,8 +78,10 @@ request từ browser thật mới qua được edge. Bản này riêng cho app
 desktop; bản cho container là `scripts/fxvpn-pc-grabber.user.js` (đẩy
 thẳng vào console qua HTTP).
 
-State file mặc định `~/.local/state/fxvpn/state.json` — cùng schema với
-container, trỏ `--state` vào file của container để dùng lại account có sẵn.
+State file mặc định `state.json` đặt **cạnh file binary/exe của app**
+(layout portable — di chuyển thư mục app là dữ liệu đi theo). Cùng schema
+với container, trỏ `--state` vào file của container để dùng lại account
+có sẵn.
 
 ## Admin security & tabs
 

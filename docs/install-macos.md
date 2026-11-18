@@ -63,16 +63,17 @@ go build -o fxvpn-desktop ./webui/desktop/cmd/fxvpn-desktop
      ĐỔI sau khi khởi động lại app. Sau đó userscript tự đẩy cả bộ
      email + access + refresh + proxy pass vào app, không cần dán tay.
 - SOCKS5 proxy lắng nghe `127.0.0.1:1080` (đổi bằng `--socks 127.0.0.1:9999`)
-- Cấu hình lưu tại `~/Library/Application Support/fxvpn/state.json`
+- Cấu hình lưu tại `state.json` **ngay cạnh binary `fxvpn-desktop`**
+  (layout portable: chuyển thư mục hay copy sang máy khác là dữ liệu theo)
 
 ## Dùng chung account với bản Docker
 
 State file giống hệt schema của container. Copy `state.json` của container
-vào `~/Library/Application Support/fxvpn/state.json` (hoặc chạy
+vào thư mục của binary (hoặc chạy
 `./fxvpn-desktop --state /đường/dẫn/state.json`) để dùng lại toàn bộ
 account có sẵn.
 
 ## Gỡ cài đặt
 
-Xoá binary và thư mục `~/Library/Application Support/fxvpn/` — app không
-cài gì khác vào hệ thống.
+Xoá thư mục chứa binary (binary + `state.json`) — app không cài gì khác
+vào hệ thống.

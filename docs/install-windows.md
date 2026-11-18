@@ -58,16 +58,17 @@ win32 thuần Go.)
      ĐỔI sau khi khởi động lại app. Sau đó userscript tự đẩy cả bộ
      email + access + refresh + proxy pass vào app, không cần dán tay.
 - SOCKS5 proxy lắng nghe `127.0.0.1:1080` (đổi bằng `--socks 127.0.0.1:9999`)
-- Cấu hình lưu tại `%AppData%\fxvpn\state.json`
+- Cấu hình lưu tại `state.json` **ngay cạnh `fxvpn-desktop.exe`** (layout
+  portable: chuyển thư mục hay copy sang máy khác là dữ liệu theo theo)
 
 ## Dùng chung account với bản Docker
 
 State file giống hệt schema của container. Copy `state.json` của container
-vào `%AppData%\fxvpn\state.json` (hoặc chạy
+vào thư mục của exe (hoặc chạy
 `fxvpn-desktop.exe --state C:\đường\dẫn\state.json`) để dùng lại toàn bộ
 account có sẵn.
 
 ## Gỡ cài đặt
 
-Xoá `fxvpn-desktop.exe` và thư mục `%AppData%\fxvpn\` — không có gì khác
-bị cài vào hệ thống.
+Xoá thư mục chứa `fxvpn-desktop.exe` (exe + `state.json`) — không có gì
+khác bị cài vào hệ thống.

@@ -134,7 +134,8 @@ Go không ở PATH? Trỏ thẳng: `make GO=/usr/local/go/bin/go`.
 ./fxvpn-desktop
 ```
 
-- State mặc định: `~/.local/state/fxvpn/state.json` (tự tạo lần đầu)
+- State mặc định: `state.json` ngay cạnh binary `fxvpn-desktop`
+  (layout portable — di chuyển thư mục app là dữ liệu đi theo, tự tạo lần đầu)
 - SOCKS5 mặc định: `127.0.0.1:1080`
 - `--version` — in phiên bản
 
@@ -207,7 +208,8 @@ sudo ufw allow 1080/tcp
 
 ```bash
 rm -f /usr/local/bin/fxvpn-desktop ~/.local/share/applications/fxvpn.desktop
-rm -rf ~/.local/state/fxvpn   # xoá luôn state (account/token) nếu muốn
+rm -f "$(dirname "$(command -v fxvpn-desktop || echo /usr/local/bin/fxvpn-desktop)")/state.json"
+# hoặc xoá state.json trong thư mục chứa binary nếu cài thủ công
 ```
 
 ---
