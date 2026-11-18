@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"gioui.org/app"
+	"gioui.org/font/gofont"
 	"gioui.org/io/clipboard"
 	"gioui.org/layout"
 	"gioui.org/op"
@@ -575,6 +576,16 @@ var transparent = color.NRGBA{}
 func (u *UI) th() *material.Theme {
 	if u.theme == nil {
 		u.theme = macchiatoTheme(material.NewTheme())
+		// Ship the Go fonts INSIDE the binary and prefer them over system
+		// fonts. material.NewTheme's zero Shaper resolves text through the
+		// system font scan (C:\Windows\Fonts) only; when that fails — a
+		// bare-bones Wine prefix is the reproducible case, but a stripped
+		// Windows SKU hits it too — the shaper emits no glyphs and the
+		// window shows colored rectangles with no text at all. gofont
+		// (pure Go, embedded, full Vietnamese coverage) makes the UI
+		// render identically everywhere; system faces remain reachable as
+		// fallback for anything gofont lacks.
+		u.theme.Shaper = text.NewShaper(text.WithCollection(gofont.Collection()))
 	}
 	return u.theme
 }
