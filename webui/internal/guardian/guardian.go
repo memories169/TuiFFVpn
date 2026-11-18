@@ -456,7 +456,7 @@ func (c *Client) RegisterDevice(ctx context.Context, name, uniqueID, publicKey s
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return nil, fmt.Errorf("%w: device registration (HTTP %d): %s", ErrTokenInvalid, resp.StatusCode, truncate(body, 200))
 	case http.StatusConflict:
-		return nil, fmt.Errorf("device limit reached (HTTP 409): %s", truncate(body, 200))
+		return nil, fmt.Errorf("device limit reached (HTTP 409) — remove a device at https://accounts.firefox.com/settings#devices then retry: %s", truncate(body, 200))
 	default:
 		return nil, fmt.Errorf("guardian device HTTP %d: %s", resp.StatusCode, truncate(body, 200))
 	}

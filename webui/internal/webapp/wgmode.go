@@ -26,6 +26,7 @@ import (
 	"log"
 	"net"
 	"runtime"
+	"strings"
 	"time"
 
 	"fxsocks/webui/internal/guardian"
@@ -133,16 +134,52 @@ func (a *App) StartWGProxy(ctx context.Context, accessToken string, server state
 	}
 	a.mu.Unlock()
 
+	// earlyDialRetries: the first dial races the WG handshake (and the
+	// netstack's first DNS query to the in-tunnel resolver), so the first
+	// attempt or two may fail with timeouts. Retry briefly instead of
+	// failing the announce/download outright.
 	srv := &proxy.Server{
 		Listen: a.ProxyAddr,
 		Dial: func(ctx context.Context, dst string) (net.Conn, error) {
-			network := "tcp"
-			return tun.DialContext(ctx, network, dst)
+			var lastErr error
+			for attempt := 0; attempt < 3; attempt++ {
+				c, err := tun.DialContext(ctx, "tcp", dst)
+				if err == nil {
+					return c, nil
+				}
+				lastErr = err
+				if !wgRetryable(err) || ctx.Err() != nil {
+					return nil, err
+				}
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(time.Duration(attempt+1) * 500 * time.Millisecond):
+				}
+			}
+			return nil, lastErr
 		},
 		DialUDP: func(ctx context.Context, host string, port int) (net.Conn, error) {
 			// A UDP "session" over WireGuard is a datagram socket in the
 			// netstack — net.Conn semantics fit the existing relay.
-			return tun.DialContext(ctx, "udp", net.JoinHostPort(host, fmt.Sprint(port)))
+			dst := net.JoinHostPort(host, fmt.Sprint(port))
+			var lastErr error
+			for attempt := 0; attempt < 3; attempt++ {
+				c, err := tun.DialContext(ctx, "udp", dst)
+				if err == nil {
+					return c, nil
+				}
+				lastErr = err
+				if !wgRetryable(err) || ctx.Err() != nil {
+					return nil, err
+				}
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(time.Duration(attempt+1) * 500 * time.Millisecond):
+				}
+			}
+			return nil, lastErr
 		},
 		UDPEndpoint: func() (string, int) { return server.IPv4AddrIn, server.Port },
 	}
@@ -204,6 +241,21 @@ func (a *App) ConnectWGWithServer(ctx context.Context, accessToken string, serve
 	}
 	a.mu.Unlock()
 	return a.StartWGProxy(ctx, accessToken, server)
+}
+
+// wgRetryable reports whether a netstack dial error is worth retrying
+// (handshake racing, transient netstack state) as opposed to a hard refusal.
+func wgRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, s := range []string{"timeout", "connection refused", "no route", "i/o timeout", "network is unreachable"} {
+		if strings.Contains(strings.ToLower(msg), s) {
+			return true
+		}
+	}
+	return false
 }
 
 // StopWG tears the WireGuard tunnel down (the SOCKS5 listener dies with it).
