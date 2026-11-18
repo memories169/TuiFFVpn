@@ -137,7 +137,13 @@ func (s *Server) handle(conn net.Conn) {
 		return
 	}
 	if cmd != 1 {
-		conn.Write([]byte{5, 7, 0, 1, 0, 0, 0, 0, 0, 0})
+		// 0x02 BIND, 0x03 UDP ASSOCIATE — torrent clients request UDP
+		// ASSOCIATE for udp:// trackers and DHT. The MASQUE tunnel is a
+		// TCP byte stream (HTTP/2 CONNECT), so datagrams cannot traverse
+		// it; say so loudly instead of a silent generic failure.
+		log.Printf("proxy: SOCKS5 cmd %d (UDP ASSOCIATE / BIND) from %s rejected — the MASQUE tunnel is TCP-only; udp:// trackers and DHT cannot traverse it. Use HTTP(S) trackers, or in qBittorrent: Tools→Options→Connection→ uncheck 'Use UPaP'/DHT, and enable 'Proxy server: SOCKS5' with 'Use proxy for tracker & peer connections'",
+			cmd, conn.RemoteAddr())
+		conn.Write([]byte{5, 7, 0, 1, 0, 0, 0, 0, 0, 0}) // 7 = command not supported
 		return
 	}
 
@@ -145,6 +151,7 @@ func (s *Server) handle(conn net.Conn) {
 	defer cancel()
 	up, err := s.Dial(ctx, dst)
 	if err != nil {
+		log.Printf("proxy: SOCKS5 CONNECT %s failed: %v", dst, err)
 		conn.Write([]byte{5, 5, 0, 1, 0, 0, 0, 0, 0, 0})
 		return
 	}
