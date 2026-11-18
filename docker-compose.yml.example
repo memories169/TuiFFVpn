@@ -29,6 +29,12 @@ services:
       # Bind on all interfaces so the SOCKS5 proxy is reachable from other
       # devices on your LAN. Use 127.0.0.1:1080 to keep it local-only.
       SOCKS_ADDR: "0.0.0.0:1080"
+      # BND.ADDR clients receive in SOCKS5 UDP ASSOCIATE replies. Behind
+      # docker the container's IP (172.x) is unroutable from your LAN, and
+      # some torrent clients (Transmission, some libtorrent) use it literally
+      # — set this to the DOCKER HOST's LAN IP (e.g. 192.168.100.10) so
+      # udp:// tracker datagrams route correctly.
+      FXVPN_UDP_BND_ADDR: "${FXVPN_UDP_BND_ADDR:-}"
       GUARDIAN_ENDPOINT: "https://vpn.mozilla.org"
       STATE_FILE: "/data/state.json"
       # Secret shared with the PC userscript: it posts captured tokens to

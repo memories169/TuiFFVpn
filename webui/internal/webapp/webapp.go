@@ -22,7 +22,9 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -38,6 +40,10 @@ import (
 // App wires the store, control-plane auth, and the proxy server.
 type App struct {
 	mu        sync.Mutex
+	// UDPBNDAddr overrides the BND.ADDR in SOCKS5 UDP ASSOCIATE replies
+	// (FXVPN_UDP_BND_ADDR) — the docker host's LAN IP so LAN clients can
+	// route datagrams to the relay. nil = RFC default (0.0.0.0).
+	UDPBNDAddr net.IP
 	Store     *state.Store
 	Guardian  string
 	ProxyAddr string
@@ -104,6 +110,15 @@ func (a *App) SetIngestKey(key string) error {
 func New(st *state.Store, guardianEndpoint, proxyAddr string) *App {
 	InstallLogCapture()
 	app := &App{Store: st, Guardian: guardianEndpoint, ProxyAddr: proxyAddr, sessions: newSessionStore()}
+	// UDPBNDAddr: the address clients should send UDP datagrams to (the
+	// docker host's LAN IP when behind port mapping). Empty → RFC default.
+	if v := os.Getenv("FXVPN_UDP_BND_ADDR"); v != "" {
+		if ip := net.ParseIP(strings.TrimSpace(v)); ip != nil {
+			app.UDPBNDAddr = ip
+		} else {
+			log.Printf("webui: FXVPN_UDP_BND_ADDR %q is not a valid IP — ignoring", v)
+		}
+	}
 	app.startRotator()
 	return app
 }

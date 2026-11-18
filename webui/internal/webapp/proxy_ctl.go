@@ -93,10 +93,11 @@ func (a *App) startProxy(host string, port int, bearer string, passExpiry time.T
 	log.Printf("proxy: pass expiry at %s (in %s)", passExpiry.Format(time.RFC3339), time.Until(passExpiry).Round(time.Second))
 	a.edgeDialer.SetRenewProvider(bearerProvider, passExpiry)
 	srv := &proxy.Server{
-		Listen:  a.ProxyAddr,
-		Dial:    a.edgeDialer.Dial,
-		DialUDP: a.edgeDialer.DialUDP,
+		Listen:     a.ProxyAddr,
+		Dial:       a.edgeDialer.Dial,
+		DialUDP:    a.edgeDialer.DialUDP,
 		UDPEndpoint: func() (string, int) { return host, port },
+		UDPBNDAddr: a.UDPBNDAddr,
 	}
 	a.proxySrv = srv
 	go func() {

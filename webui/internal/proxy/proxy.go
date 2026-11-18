@@ -60,6 +60,14 @@ type Server struct {
 	// UDPEndpoint describes the MASQUE edge the UDP relay dials through
 	// (for diagnostics only).
 	UDPEndpoint func() (host string, port int)
+	// UDPBNDAddr overrides the BND.ADDR in UDP ASSOCIATE replies. Behind
+	// docker/NAT the server can only see its container IP (e.g. 172.28.0.2),
+	// which LAN clients cannot route to — clients that take BND.ADDR
+	// literally (Transmission, some libtorrent versions) then send datagrams
+	// to an unroutable address and every tracker query dies silently. Set it
+	// to the IP the clients use to reach the proxy (the docker host's LAN
+	// IP); empty = 0.0.0.0 (RFC default: client uses the TCP server address).
+	UDPBNDAddr net.IP
 	// Auth validates SOCKS5 user/pass; nil disables.
 	Auth func(user, pass string) bool
 	// Timeout bounds upstream dials.
@@ -237,16 +245,23 @@ func (s *Server) handle(conn net.Conn) {
 		relayAddr := udpSrv.addr
 		reply := []byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0}
 		binary.BigEndian.PutUint16(reply[8:10], uint16(relayAddr.Port))
-		if local, ok := conn.LocalAddr().(*net.TCPAddr); ok && local.IP != nil && !local.IP.IsUnspecified() {
-			if v4 := local.IP.To4(); v4 != nil {
-				copy(reply[4:8], v4)
-			} else {
-				// IPv6 client connection: extend to ATYP=4.
-				ext := []byte{5, 0, 0, 4}
-				ext = append(ext, local.IP.To16()...)
-				ext = append(ext, reply[8:10]...)
-				copy(reply, ext)
+		bnd := s.UDPBNDAddr
+		if bnd == nil {
+			// Default to the TCP connection's local IP (the address family
+			// the client already routes to); for direct (non-docker) runs
+			// that is the right interface. Behind NAT it is overridden via
+			// UDPBNDAddr above.
+			if local, ok := conn.LocalAddr().(*net.TCPAddr); ok && local.IP != nil && !local.IP.IsUnspecified() {
+				bnd = local.IP
 			}
+		}
+		if v4 := bnd.To4(); v4 != nil {
+			copy(reply[4:8], v4)
+		} else if bnd != nil && bnd.To16() != nil {
+			ext := []byte{5, 0, 0, 4}
+			ext = append(ext, bnd.To16()...)
+			ext = append(ext, reply[8:10]...)
+			copy(reply, ext)
 		}
 		log.Printf("proxy: UDP ASSOCIATE reply to %s: BND=%s (datagrams via CONNECT-UDP through %s)",
 			conn.RemoteAddr(), net.JoinHostPort(replyIPString(reply), fmt.Sprint(relayAddr.Port)), s.udpHost())
