@@ -124,11 +124,12 @@ type Store struct {
 
 // WGServerInfo is a flattened WireGuard server endpoint.
 type WGServerInfo struct {
-	Hostname   string `json:"hostname"`
-	IPv4AddrIn string `json:"ipv4_addr_in"`
-	PublicKey  string `json:"public_key"`
-	Port       int    `json:"port"`
-	Weight     int    `json:"weight,omitempty"` // load-balancing weight (Guardian)
+	Hostname    string `json:"hostname"`
+	IPv4AddrIn  string `json:"ipv4_addr_in"`
+	IPv4Gateway string `json:"ipv4_gateway,omitempty"` // in-tunnel DNS resolver
+	PublicKey   string `json:"public_key"`
+	Port        int    `json:"port"`
+	Weight      int    `json:"weight,omitempty"` // load-balancing weight (Guardian)
 }
 
 // WGDeviceState persists the registered WireGuard device.

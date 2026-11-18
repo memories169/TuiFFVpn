@@ -83,7 +83,12 @@ func (a *App) startProxy(host string, port int, bearer string, passExpiry time.T
 		a.mu.Unlock()
 		// Keep the dialer's current pass in sync (renewal loop may also
 		// write it; last writer wins with a fresh valid pass either way).
-		a.edgeDialer.UpdatePass(pass.RawToken)
+		a.mu.Lock()
+		d := a.edgeDialer
+		a.mu.Unlock()
+		if d != nil {
+			d.UpdatePass(pass.RawToken)
+		}
 		return pass.RawToken, nil
 	}
 	a.edgeDialer = proxy.HTTP2Dialer(host, port, bearer, bearerProvider)

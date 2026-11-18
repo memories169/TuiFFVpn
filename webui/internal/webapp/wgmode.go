@@ -108,6 +108,13 @@ func (a *App) StartWGProxy(ctx context.Context, accessToken string, server state
 		return err
 	}
 
+	// DNS: the server's in-tunnel gateway (what the official client uses:
+	// exitConfig.m_dnsServer = exitServer.ipv4Gateway()); fallback to
+	// Guardian's block-ads resolver range at 100.64.0.1.
+	dns := server.IPv4Gateway
+	if dns == "" {
+		dns = "100.64.0.1"
+	}
 	tun, err := DialWGTunnel(ctx, WGTunnelConfig{
 		PrivateKey:  st.PrivKey,
 		AddressIPv4: st.IPv4,
@@ -115,7 +122,7 @@ func (a *App) StartWGProxy(ctx context.Context, accessToken string, server state
 		PeerPubKey:  server.PublicKey,
 		Endpoint:    fmt.Sprintf("%s:%d", server.IPv4AddrIn, server.Port),
 		AllowedIPs:  []string{"0.0.0.0/0", "::/0"},
-		DNS:         []string{"10.64.0.1"},
+		DNS:         []string{dns},
 	})
 	if err != nil {
 		return err

@@ -159,10 +159,11 @@ func (a *App) pickWGServer(ctx context.Context, accessToken string) (state.WGSer
 	}
 
 	return state.WGServerInfo{
-		Hostname:   chosen.Hostname,
-		IPv4AddrIn: chosen.IPv4AddrIn,
-		PublicKey:  chosen.PublicKey,
-		Port:       chosen.Port,
+		Hostname:    chosen.Hostname,
+		IPv4AddrIn:  chosen.IPv4AddrIn,
+		IPv4Gateway: chosen.IPv4Gateway,
+		PublicKey:   chosen.PublicKey,
+		Port:        chosen.Port,
 	}, nil
 }
 
