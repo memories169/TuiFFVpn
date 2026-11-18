@@ -115,8 +115,9 @@ func New(st *state.Store, guardianEndpoint, proxyAddr string) *App {
 	if v := os.Getenv("FXVPN_UDP_BND_ADDR"); v != "" {
 		if ip := net.ParseIP(strings.TrimSpace(v)); ip != nil {
 			app.UDPBNDAddr = ip
+			log.Printf("webui: UDP ASSOCIATE replies will advertise BND.ADDR %s (FXVPN_UDP_BND_ADDR)", ip)
 		} else {
-			log.Printf("webui: FXVPN_UDP_BND_ADDR %q is not a valid IP — ignoring", v)
+			log.Printf("webui: FXVPN_UDP_BND_ADDR %q is not a valid IP — ignoring (BND.ADDR falls back to the connection address)", v)
 		}
 	}
 	app.startRotator()

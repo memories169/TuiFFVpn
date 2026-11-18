@@ -668,6 +668,10 @@ Cấu hình torrent client (qBittorrent) khi dùng fxvpn:
    một số libtorrent) sẽ gửi datagram vào hư không. Dấu hiệu nhận biết:
    log có `UDP ASSOCIATE reply ... BND=172.28...` nhưng không bao giờ có
    `UDP datagram ... → tracker`.
+   **Sau khi sửa:** khởi động lại torrent client — libtorrent nhớ trạng
+   thái "tracker UDP chết" trong session và không thử lại cho tới khi
+   restart. Kiểm tra image chứa fix: log boot phải có dòng
+   `UDP ASSOCIATE replies will advertise BND.ADDR <ip>`.
 1. Tools → Options → Connection → Proxy server: `SOCKS5`, `127.0.0.1:1080`;
    tick **"Use proxy for peer connections"** — để toàn bộ traffic (kể cả
    UDP) đi qua tunnel, không rò IP thật.
