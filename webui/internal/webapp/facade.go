@@ -416,6 +416,15 @@ func (a *App) SelectAndStart(ctx context.Context, countryCode, countryName, city
 
 // DisconnectProxy stops the running proxy and clears the last error.
 func (a *App) DisconnectProxy() {
+	// Leaving WG mode? Clear the flag before tearing the transport down.
+	a.mu.Lock()
+	a.wgMode = false
+	t := a.wgTunnel
+	a.wgTunnel = nil
+	a.mu.Unlock()
+	if t != nil {
+		t.Close()
+	}
 	a.mu.Lock()
 	if a.proxySrv != nil {
 		_ = a.proxySrv.Close()

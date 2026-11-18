@@ -126,6 +126,7 @@ func (a *App) StartWGProxy(ctx context.Context, accessToken string, server state
 		a.wgTunnel.Close()
 	}
 	a.wgTunnel = tun
+	a.wgMode = true // keeper/rotator must not replace this with MASQUE
 	a.Store.WGLastServer = &server
 	_ = a.Store.Save()
 	if a.proxySrv != nil {
@@ -243,6 +244,13 @@ func (a *App) ConnectWGWithServer(ctx context.Context, accessToken string, serve
 	return a.StartWGProxy(ctx, accessToken, server)
 }
 
+// InWGMode reports whether the WireGuard transport is currently selected.
+func (a *App) InWGMode() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.wgMode
+}
+
 // wgRetryable reports whether a netstack dial error is worth retrying
 // (handshake racing, transient netstack state) as opposed to a hard refusal.
 func wgRetryable(err error) bool {
@@ -263,6 +271,7 @@ func (a *App) StopWG() {
 	a.mu.Lock()
 	t := a.wgTunnel
 	a.wgTunnel = nil
+	a.wgMode = false
 	a.mu.Unlock()
 	if t != nil {
 		t.Close()

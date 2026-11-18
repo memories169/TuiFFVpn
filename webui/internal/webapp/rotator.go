@@ -174,6 +174,9 @@ func (a *App) keeperOnce() {
 // what makes the desktop app "tự nhớ máy chủ + tự kết nối lại" like the
 // docker image, even when the edge is blocking fresh Go requests.
 func (a *App) restoreSelectedOnBoot() {
+	if a.InWGMode() {
+		return // WG tunnel already restored separately
+	}
 	a.mu.Lock()
 	sel := a.Store.Selected
 	hasAccount := a.Store.ActiveAccount() != nil
@@ -235,6 +238,13 @@ func (a *App) restoreSelectedOnBoot() {
 
 // rotateOnce evaluates and performs one rotation if needed.
 func (a *App) rotateOnce() {
+	// WG mode: the tunnel is account-scoped at the IP layer and does not
+	// depend on proxy passes — rotation (which restarts the MASQUE proxy)
+	// would stomp it. Skip; account/token hygiene still runs in keeperOnce.
+	if a.InWGMode() {
+		log.Printf("rotator: WG mode active — rotation skipped (tunnel is WireGuard)")
+		return
+	}
 	// Right after a boot restore on the persisted pass the tunnel is healthy
 	// but the edge still 406s fresh Go fetches — evaluating rotation would
 	// only burn edge calls (and risk switching off a working account).
@@ -491,6 +501,11 @@ var errFailoverOK = errors.New("failover to another account")
 // against the given server. Callers outside the dial path only — it replaces
 // a.proxySrv (closing the listener).
 func (a *App) restartProxyOnActive(ctx context.Context, host string, port int) error {
+	// Defense-in-depth: never replace an active WG tunnel with MASQUE.
+	if a.InWGMode() {
+		log.Printf("proxy: WG mode active — MASQUE restart skipped")
+		return nil
+	}
 	pass, err := a.refreshProxyPass(ctx)
 	if err != nil {
 		return err

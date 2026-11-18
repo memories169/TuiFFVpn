@@ -43,6 +43,10 @@ type App struct {
 	// wgTunnel is the active WireGuard userspace tunnel (WG mode); nil when
 	// running on the MASQUE proxy-pass path.
 	wgTunnel *WGTunnel
+	// wgMode marks WireGuard as the selected transport while connected —
+	// the keeper/rotator loops consult it so MASQUE pass renewal and proxy
+	// restarts never stomp an active WG tunnel.
+	wgMode bool
 	// UDPBNDAddr overrides the BND.ADDR in SOCKS5 UDP ASSOCIATE replies
 	// (FXVPN_UDP_BND_ADDR) — the docker host's LAN IP so LAN clients can
 	// route datagrams to the relay. nil = RFC default (0.0.0.0).
