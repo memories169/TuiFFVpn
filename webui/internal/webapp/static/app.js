@@ -51,12 +51,16 @@ function showApp() {
 let logsTimer = null;
 
 async function refreshLogs() {
-  const res = await api('logs');
-  const lines = res.lines || [];
   const el = $('logs-output');
-  el.textContent = lines.length ? lines.join('\n') : '(chưa có log)';
-  $('logs-count').textContent = lines.length ? `— ${lines.length} dòng` : '';
-  el.scrollTop = el.scrollHeight;
+  try {
+    const res = await api('logs');
+    const lines = res.lines || [];
+    el.textContent = lines.length ? lines.join('\n') : '(chưa có log)';
+    $('logs-count').textContent = lines.length ? `— ${lines.length} dòng` : '';
+    el.scrollTop = el.scrollHeight;
+  } catch (e) {
+    el.textContent = 'Lỗi tải log: ' + e + ' — kiểm tra console trình duyệt (F12)';
+  }
 }
 
 function bindLogs() {

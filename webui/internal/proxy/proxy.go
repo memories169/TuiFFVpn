@@ -92,6 +92,17 @@ func (s *Server) sharedUDPRelay() (*sockUDPProxy, error) {
 	return relay, nil
 }
 
+// replyIPString extracts the BND.ADDR of a SOCKS5 reply for logging.
+func replyIPString(reply []byte) string {
+	switch reply[3] {
+	case 1:
+		return net.IP(reply[4:8]).String()
+	case 4:
+		return net.IP(reply[4:20]).String()
+	}
+	return "?"
+}
+
 // udpHost/udpPort are diagnostic helpers for the ASSOCIATE log line.
 func (s *Server) udpHost() string {
 	if s.UDPEndpoint == nil {
@@ -215,14 +226,30 @@ func (s *Server) handle(conn net.Conn) {
 		// NOTE: no per-association close — the relay is shared and lives
 		// as long as the Server. When the control connection drops the
 		// association ends, but the socket stays for the next client.
-		// Reply: BND.ADDR = relay listen IP (0.0.0.0 = use the connection's
-		// destination address per RFC), BND.PORT = relay UDP port.
+		// Reply: BND.PORT = relay UDP port. BND.ADDR = the IP the client
+		// used to reach this server (conn.LocalAddr()) — RFC 1928 allows
+		// 0.0.0.0 ("client should use the address it used for the TCP
+		// connection"), but some clients (Transmission among them) take
+		// BND.ADDR LITERALLY and send datagrams to 0.0.0.0, which never
+		// arrive. Echoing the real IP works for every client: behind docker
+		// it's the container IP, but the mapped host port still routes to
+		// the relay, and the port is what matters.
 		relayAddr := udpSrv.addr
 		reply := []byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0}
 		binary.BigEndian.PutUint16(reply[8:10], uint16(relayAddr.Port))
-		if ip := net.ParseIP(relayAddr.IP.String()); ip != nil && !ip.IsUnspecified() {
-			copy(reply[4:8], ip.To4())
+		if local, ok := conn.LocalAddr().(*net.TCPAddr); ok && local.IP != nil && !local.IP.IsUnspecified() {
+			if v4 := local.IP.To4(); v4 != nil {
+				copy(reply[4:8], v4)
+			} else {
+				// IPv6 client connection: extend to ATYP=4.
+				ext := []byte{5, 0, 0, 4}
+				ext = append(ext, local.IP.To16()...)
+				ext = append(ext, reply[8:10]...)
+				copy(reply, ext)
+			}
 		}
+		log.Printf("proxy: UDP ASSOCIATE reply to %s: BND=%s (datagrams via CONNECT-UDP through %s)",
+			conn.RemoteAddr(), net.JoinHostPort(replyIPString(reply), fmt.Sprint(relayAddr.Port)), s.udpHost())
 		if _, err := conn.Write(reply); err != nil {
 			return
 		}
