@@ -68,6 +68,28 @@ type Server struct {
 	mu     sync.Mutex
 	closed bool
 	ln     net.Listener
+
+	// udpRelay is the SHARED datagram relay: one UDP socket on the same
+	// port as the TCP listener, created lazily on the first UDP ASSOCIATE
+	// and reused by every later association (docker maps one port pair —
+	// each association binding its own socket on the same UDP port would
+	// fail without SO_REUSEPORT).
+	udpRelay *sockUDPProxy
+}
+
+// sharedUDPRelay returns the Server's relay, creating it on first use.
+func (s *Server) sharedUDPRelay() (*sockUDPProxy, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.udpRelay != nil {
+		return s.udpRelay, nil
+	}
+	relay, err := newUDPRelay(s)
+	if err != nil {
+		return nil, err
+	}
+	s.udpRelay = relay
+	return relay, nil
 }
 
 // udpHost/udpPort are diagnostic helpers for the ASSOCIATE log line.
@@ -117,7 +139,11 @@ func (s *Server) ListenAndServe() error {
 func (s *Server) Close() error {
 	s.mu.Lock()
 	s.closed = true
+	relay := s.udpRelay
 	s.mu.Unlock()
+	if relay != nil {
+		relay.close()
+	}
 	if s.ln != nil {
 		return s.ln.Close()
 	}
@@ -178,7 +204,7 @@ func (s *Server) handle(conn net.Conn) {
 			conn.Write([]byte{5, 7, 0, 1, 0, 0, 0, 0, 0, 0}) // command not supported
 			return
 		}
-		udpSrv, err := newUDPRelay(s)
+		udpSrv, err := s.sharedUDPRelay()
 		if err != nil {
 			log.Printf("proxy: UDP relay setup failed: %v", err)
 			conn.Write([]byte{5, 1, 0, 1, 0, 0, 0, 0, 0, 0}) // general failure
@@ -186,7 +212,9 @@ func (s *Server) handle(conn net.Conn) {
 		}
 		log.Printf("proxy: UDP ASSOCIATE opened for %s — relay on %s (datagrams now go via CONNECT-UDP through %s)",
 			conn.RemoteAddr(), udpSrv.addr, net.JoinHostPort(s.udpHost(), fmt.Sprint(s.udpPort())))
-		defer udpSrv.close()
+		// NOTE: no per-association close — the relay is shared and lives
+		// as long as the Server. When the control connection drops the
+		// association ends, but the socket stays for the next client.
 		// Reply: BND.ADDR = relay listen IP (0.0.0.0 = use the connection's
 		// destination address per RFC), BND.PORT = relay UDP port.
 		relayAddr := udpSrv.addr

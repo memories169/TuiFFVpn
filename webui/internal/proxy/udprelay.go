@@ -282,16 +282,51 @@ type sockUDPProxy struct {
 	srv    *Server
 	socket *net.UDPConn
 	addr   *net.UDPAddr
-	mu      sync.Mutex
-	conns   map[string]net.Conn // "host:port" → CONNECT-UDP session
-	lastSrc map[string]*net.UDPAddr
-	stop    chan struct{}
+	mu          sync.Mutex
+	conns       map[string]net.Conn // "host:port" → CONNECT-UDP session
+	lastSrc     map[string]*net.UDPAddr
+	stop        chan struct{}
+	pumpStarted bool
 }
 
 func newUDPRelay(srv *Server) (*sockUDPProxy, error) {
-	socket, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	// Bind the relay on the SAME port as the SOCKS5 TCP listener (RFC 1928
+	// §6: BND.PORT is advisory, clients send datagrams there; sharing one
+	// port TCP+UDP is the de-facto behavior every real SOCKS5 server uses).
+	// Critical for docker: compose maps exactly one port pair (1080/1080) —
+	// a random relay port would be unreachable from outside the container
+	// and every tracker datagram would silently die at the NAT layer.
+	var bind *net.UDPAddr
+	if host, portStr, err := net.SplitHostPort(srv.Listen); err == nil {
+		if port, perr := strconv.Atoi(portStr); perr == nil {
+			// Listen on all interfaces of the same address family the TCP
+			// listener uses; empty host or 0.0.0.0 → wildcard.
+			ip := net.IPv4zero
+			if host != "" && host != "0.0.0.0" && host != "::" {
+				ip = net.ParseIP(host)
+				if ip == nil {
+					ip = net.IPv4zero
+				}
+			}
+			bind = &net.UDPAddr{IP: ip, Port: port}
+		}
+	}
+	if bind == nil {
+		bind = &net.UDPAddr{IP: net.IPv4zero, Port: 0}
+	}
+	socket, err := net.ListenUDP("udp", bind)
 	if err != nil {
-		return nil, err
+		// Port already taken (rare — TCP and UDP namespaces are separate,
+		// but a second association while the first lives rebinds fine since
+		// we reuse ONE relay per association... we bind per association, so
+		// a second concurrent ASSOCIATE on the same port fails): fall back
+		// to a random port and say so — the docker mapping won't cover it.
+		socket, err = net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+		if err != nil {
+			return nil, err
+		}
+		log.Printf("proxy: UDP relay could not bind %s (in use?) — fell back to random port %d; OUTSIDE the container this port is unreachable",
+			bind, socket.LocalAddr().(*net.UDPAddr).Port)
 	}
 	return &sockUDPProxy{
 		srv:    srv,
@@ -320,45 +355,60 @@ func (u *sockUDPProxy) close() {
 	u.mu.Unlock()
 }
 
-// serve runs the datagram pump until the TCP control connection drops.
+// serve starts the datagram pump (once, on the shared relay) and waits
+// until this association's TCP control connection drops. The socket and
+// pump live as long as the Server; a new ASSOCIATE just reuses them.
 func (u *sockUDPProxy) serve(control net.Conn, srv *Server) {
-	// Read client datagrams.
-	go func() {
-		buf := make([]byte, 65536)
-		for {
-			n, src, err := u.socket.ReadFromUDP(buf)
-			if err != nil {
+	u.startPump()
+	io.Copy(io.Discard, control)
+	log.Printf("proxy: UDP ASSOCIATE from %s closed (relay socket stays for other associations)", control.RemoteAddr())
+}
+
+// startPump launches the datagram reader exactly once.
+func (u *sockUDPProxy) startPump() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.pumpStarted {
+		return
+	}
+	u.pumpStarted = true
+	go u.readDatagrams()
+}
+
+// readDatagrams consumes client datagrams for the relay's lifetime.
+func (u *sockUDPProxy) readDatagrams() {
+	buf := make([]byte, 65536)
+	for {
+		n, src, err := u.socket.ReadFromUDP(buf)
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
 				return
 			}
-			host, port, payload, err := parseUDPHeader(buf[:n])
-			if err != nil {
-				continue
-			}
-			key := net.JoinHostPort(host, fmt.Sprint(port))
-			u.mu.Lock()
-			u.lastSrc[key] = src
-			u.mu.Unlock()
-			if !u.hasSession(key) {
-				log.Printf("proxy: UDP datagram %d bytes → %s:%d (first for this dst — opening CONNECT-UDP session)", len(payload), host, port)
-			}
-			sess, err := u.sessionFor(host, port)
-			if err != nil {
-				log.Printf("proxy: UDP relay %s:%d session: %v", host, port, err)
-				continue
-			}
-			if _, err := sess.Write(payload); err != nil {
-				log.Printf("proxy: UDP relay %s:%d write: %v", host, port, err)
-				u.dropSession(key)
-				continue
-			}
-			_ = src
+			log.Printf("proxy: UDP relay read error: %v", err)
+			return
 		}
-	}()
-
-	// Reply pump per session is driven by per-session readers.
-	// Block until the control connection closes (association lifetime).
-	io.Copy(io.Discard, control)
-	u.close()
+		host, port, payload, err := parseUDPHeader(buf[:n])
+		if err != nil {
+			log.Printf("proxy: UDP relay bad datagram from %s: %v", src, err)
+			continue
+		}
+		key := net.JoinHostPort(host, fmt.Sprint(port))
+		u.mu.Lock()
+		u.lastSrc[key] = src
+		u.mu.Unlock()
+		if !u.hasSession(key) {
+			log.Printf("proxy: UDP datagram %d bytes → %s:%d (first for this dst — opening CONNECT-UDP session)", len(payload), host, port)
+		}
+		sess, err := u.sessionFor(host, port)
+		if err != nil {
+			log.Printf("proxy: UDP relay %s:%d session: %v", host, port, err)
+			continue
+		}
+		if _, err := sess.Write(payload); err != nil {
+			log.Printf("proxy: UDP relay %s:%d write: %v", host, port, err)
+			u.dropSession(key)
+		}
+	}
 }
 
 // hasSession reports whether a CONNECT-UDP session for dst already exists.
