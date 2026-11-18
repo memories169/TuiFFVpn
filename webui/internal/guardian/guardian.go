@@ -30,6 +30,7 @@ import (
 	"sync"
 	"time"
 
+	"fxsocks/webui/internal/edgehttp"
 	"fxsocks/webui/internal/fxa"
 )
 
@@ -159,7 +160,12 @@ func (c *Client) do(ctx context.Context, method, path string) ([]byte, int, erro
 
 func (c *Client) doFull(ctx context.Context, method, path string) ([]byte, http.Header, int, error) {
 	if c.HTTP == nil {
-		c.HTTP = &http.Client{Timeout: 60 * time.Second}
+		// edgehttp: browser-fingerprint uTLS transport — the default Go
+		// fingerprint draws Fastly 406+CAPTCHA where a browser passes.
+		c.HTTP = &http.Client{Timeout: 60 * time.Second, Transport: edgehttp.Transport()}
+	}
+	if c.Jar == nil {
+		c.Jar, _ = cookiejar.New(nil)
 	}
 	reqURL := c.endpoint() + path
 
@@ -168,12 +174,6 @@ func (c *Client) doFull(ctx context.Context, method, path string) ([]byte, http.
 	// One attempt per call means a single unlucky roll shows the account
 	// as "? / ?" until the next keeper pass 30 minutes later. Retry with
 	// backoff: 2s, 6s.
-	if c.HTTP == nil {
-		c.HTTP = &http.Client{Timeout: 60 * time.Second}
-	}
-	if c.Jar == nil {
-		c.Jar, _ = cookiejar.New(nil)
-	}
 	// Seed this fresh client's jar with cookies another client already
 	// earned from the edge (webapp builds a new Client per fetch; without
 	// this every fetch re-solves the challenge from scratch).

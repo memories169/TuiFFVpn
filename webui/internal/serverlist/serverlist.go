@@ -24,6 +24,8 @@ import (
 	"net/http"
 	"sort"
 	"time"
+
+	"fxsocks/webui/internal/edgehttp"
 )
 
 const remoteSettingsURL = "https://firefox.settings.services.mozilla.com/v1/buckets/main/collections/vpn-serverlist/records"
@@ -65,7 +67,9 @@ type rsResponse struct {
 
 // Fetch returns the list of countries from Remote Settings.
 func Fetch(ctx context.Context) ([]Country, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
+	// Same Fastly edge family as the accounts/Guardian hosts — ride the
+	// browser-fingerprint transport or the edge 406s this call too.
+	client := &http.Client{Timeout: 30 * time.Second, Transport: edgehttp.Transport()}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, remoteSettingsURL, nil)
 	if err != nil {
 		return nil, err

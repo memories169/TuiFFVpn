@@ -33,12 +33,20 @@ import (
 	"strings"
 	"time"
 
+	"fxsocks/webui/internal/edgehttp"
 	"golang.org/x/crypto/hkdf"
 	"golang.org/x/crypto/pbkdf2"
 )
 
 const (
-	AuthServer   = "https://api.accounts.firefox.com/v1"
+	// AuthServer is the FxA auth/OAuth API base. oauth.accounts.firefox.com
+	// is the canonical auth host (see Mozilla's ecosystem docs: "OAuth:
+	// https://oauth.accounts.firefox.com/"). The old api.accounts.firefox.com
+	// host still serves GETs, but its Fastly edge answers every POST with an
+	// empty HTTP 406 anti-bot block — the direct cause of "refresh-all hits
+	// Fastly 406 on the desktop app while the docker image is fine" once the
+	// edge flagged the IP: same binary, same request, different host.
+	AuthServer   = "https://oauth.accounts.firefox.com/v1"
 	ClientID     = "5882386c6d801776"
 	OAuthScope   = "profile https://identity.mozilla.com/apps/vpn"
 	ProtoVersion = "identity.mozilla.com/picl/v1/"
@@ -58,7 +66,10 @@ var (
 )
 
 // shared control-plane client with a cookie jar so the Fastly anti-bot cookie
-// earned by the challenge solver persists across retries.
+// earned by the challenge solver persists across retries. Its transport is
+// the process-wide browser-fingerprint uTLS dialer (internal/edgehttp): the
+// default Go TLS/HTTP2 fingerprint gets 406+CAPTCHA from the edge where a
+// browser on the same IP passes — the root cause of "docker ok, PC 406".
 var (
 	jar          http.CookieJar
 	controlPlane *http.Client
@@ -66,7 +77,7 @@ var (
 
 func init() {
 	jar, _ = cookiejar.New(nil)
-	controlPlane = &http.Client{Jar: jar, Timeout: 90 * time.Second}
+	controlPlane = &http.Client{Jar: jar, Timeout: 90 * time.Second, Transport: edgehttp.Transport()}
 }
 
 // LoginResponse is the FxA /account/login response.
