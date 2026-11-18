@@ -113,6 +113,11 @@ func (a *App) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
+// BuildVersion lets main inject the binary's version string; it surfaces in
+// /api/admin/status so a stale docker image is immediately identifiable from
+// the console (no shell access needed).
+var BuildVersion = "dev"
+
 func (a *App) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 	c, err := r.Cookie(sessionCookie)
 	loggedIn := err == nil && a.sessions.valid(c.Value)
@@ -120,7 +125,7 @@ func (a *App) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 	theme := a.Store.Admin.Theme
 	user := a.Store.Admin.User
 	a.mu.Unlock()
-	writeJSON(w, 200, map[string]any{"authenticated": loggedIn, "user": user, "theme": theme})
+	writeJSON(w, 200, map[string]any{"authenticated": loggedIn, "user": user, "theme": theme, "version": BuildVersion})
 }
 
 type changePassReq struct {

@@ -7,9 +7,11 @@
 FROM golang:1.22-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
+ARG VERSION=docker
+ENV VERSION=${VERSION}
 RUN go mod download
 COPY webui/ ./webui/
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/fxvpn-webui ./webui/cmd/fxvpn-webui \
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION:-docker}" -o /out/fxvpn-webui ./webui/cmd/fxvpn-webui \
     && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/fxvpn-token ./webui/cmd/fxvpn-token
 
 # Runtime stage. The web console and userspace SOCKS5 proxy need no root; the

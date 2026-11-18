@@ -12,6 +12,7 @@ async function api(path, method, body) {
 // ---- Bootstrap: check admin session, show login or app ----
 (async function init() {
   const st = await api('admin/status');
+  if (st.version) document.title = `Firefox VPN Console — ${st.version}`;
   if (st.authenticated) {
     showApp();
   }

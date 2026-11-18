@@ -631,6 +631,21 @@ redistributions of its own code, which does not apply here.
 - **Edge servers** come from Mozilla Remote Settings
   (`*.m1.fastly-masque.net`, port 2499); quarantined ones are skipped.
 
+### Kiểm tra bản image đang chạy (tránh stale image)
+
+Tab **Logs** trong web console luôn có dòng đầu dạng
+`fxvpn-webui <version> http=... socks=...`. Version cũng hiện trong tiêu đề
+trang. Nếu không thấy tính năng mới (Logs tab, UDP), image container đang
+cũ — chạy:
+
+```bash
+docker compose build   # hoặc: docker compose up -d --build
+docker compose up -d
+```
+
+`docker-compose.yml` đã set `pull_policy: build` nên `up -d` tự build lại
+từ source checkout — miễn là bạn đã `git pull` trước.
+
 ## Torrents & UDP
 
 Tunnel MASQUE của Mozilla (fastly-masque, port 2499) hỗ trợ **CONNECT-UDP

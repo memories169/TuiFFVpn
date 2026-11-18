@@ -27,6 +27,8 @@ import (
 
 var version = "dev"
 
+func init() { webapp.BuildVersion = version }
+
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
