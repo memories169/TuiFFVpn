@@ -54,6 +54,9 @@ type Server struct {
 	Listen string
 	// Dial connects to the destination through the VPN.
 	Dial Dialer
+	// DialUDP opens a UDP relay session to host:port through the VPN
+	// (CONNECT-UDP over MASQUE). Nil disables UDP ASSOCIATE.
+	DialUDP func(ctx context.Context, host string, port int) (net.Conn, error)
 	// Auth validates SOCKS5 user/pass; nil disables.
 	Auth func(user, pass string) bool
 	// Timeout bounds upstream dials.
@@ -136,14 +139,45 @@ func (s *Server) handle(conn net.Conn) {
 		conn.Write([]byte{5, 1, 0, 1, 0, 0, 0, 0, 0, 0})
 		return
 	}
-	if cmd != 1 {
-		// 0x02 BIND, 0x03 UDP ASSOCIATE — torrent clients request UDP
-		// ASSOCIATE for udp:// trackers and DHT. The MASQUE tunnel is a
-		// TCP byte stream (HTTP/2 CONNECT), so datagrams cannot traverse
-		// it; say so loudly instead of a silent generic failure.
-		log.Printf("proxy: SOCKS5 cmd %d (UDP ASSOCIATE / BIND) from %s rejected — the MASQUE tunnel is TCP-only; udp:// trackers and DHT cannot traverse it. Use HTTP(S) trackers, or in qBittorrent: Tools→Options→Connection→ uncheck 'Use UPaP'/DHT, and enable 'Proxy server: SOCKS5' with 'Use proxy for tracker & peer connections'",
-			cmd, conn.RemoteAddr())
+	if cmd != 1 && cmd != 3 {
+		// 0x02 BIND — never useful here. 0x03 UDP ASSOCIATE is handled below.
+		log.Printf("proxy: SOCKS5 cmd %d from %s unsupported", cmd, conn.RemoteAddr())
 		conn.Write([]byte{5, 7, 0, 1, 0, 0, 0, 0, 0, 0}) // 7 = command not supported
+		return
+	}
+
+	// UDP ASSOCIATE (RFC 1928 §6): relay datagrams through the MASQUE edge
+	// via CONNECT-UDP (RFC 9298) — torrent udp:// trackers, DHT, QUIC, DNS.
+	// The client's DST.ADDR/DST.PORT is usually 0.0.0.0:0 (the port it WILL
+	// send from is unknown at this point); per RFC we reply with our relay
+	// address and let the client direct traffic to it.
+	if cmd == 3 {
+		if s.DialUDP == nil {
+			// No UDP carrier configured — the MASQUE tunnel is TCP-only.
+			log.Printf("proxy: SOCKS5 UDP ASSOCIATE from %s rejected — no DialUDP (MASQUE tunnel is TCP-only)", conn.RemoteAddr())
+			conn.Write([]byte{5, 7, 0, 1, 0, 0, 0, 0, 0, 0}) // command not supported
+			return
+		}
+		udpSrv, err := newUDPRelay(s)
+		if err != nil {
+			log.Printf("proxy: UDP relay setup failed: %v", err)
+			conn.Write([]byte{5, 1, 0, 1, 0, 0, 0, 0, 0, 0}) // general failure
+			return
+		}
+		defer udpSrv.close()
+		// Reply: BND.ADDR = relay listen IP (0.0.0.0 = use the connection's
+		// destination address per RFC), BND.PORT = relay UDP port.
+		relayAddr := udpSrv.addr
+		reply := []byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0}
+		binary.BigEndian.PutUint16(reply[8:10], uint16(relayAddr.Port))
+		if ip := net.ParseIP(relayAddr.IP.String()); ip != nil && !ip.IsUnspecified() {
+			copy(reply[4:8], ip.To4())
+		}
+		if _, err := conn.Write(reply); err != nil {
+			return
+		}
+		// The TCP control connection stays open for the association's life.
+		udpSrv.serve(conn, s)
 		return
 	}
 
@@ -281,6 +315,7 @@ type DialerOption func(*MasqueDialer)
 // edge-session diagnostics.
 type MasqueDialer struct {
 	fn   Dialer
+	udpFn func(ctx context.Context, host string, port int) (net.Conn, error)
 	pool *sessionPool
 	// host/port/insecureTLS describe the edge endpoint for new sessions.
 	host        string
@@ -438,6 +473,15 @@ func (m *MasqueDialer) Dial(ctx context.Context, dst string) (net.Conn, error) {
 	return m.fn(ctx, dst)
 }
 
+// DialUDP opens a CONNECT-UDP relay session (RFC 9298) to host:port through
+// the pooled MASQUE edge — the UDP carrier for SOCKS5 UDP ASSOCIATE.
+func (m *MasqueDialer) DialUDP(ctx context.Context, host string, port int) (net.Conn, error) {
+	if m.udpFn == nil {
+		return nil, errors.New("proxy: UDP relay not initialized")
+	}
+	return m.udpFn(ctx, host, port)
+}
+
 // Generation reports how many distinct edge sessions have been built.
 func (m *MasqueDialer) Generation() int64 {
 	m.pool.mu.Lock()
@@ -477,6 +521,32 @@ func HTTP2Dialer(host string, port int, proxyPass string, bearerProvider func() 
 		}
 		conn, err = m.dial(ctx, dst, m.currentPass())
 		return conn, err
+	}
+	// UDP path: CONNECT-UDP sessions over the same pooled edge sessions —
+	// 401 (expired pass) refreshes via the provider and retries once, and
+	// any dead-session error retries once on a fresh session, exactly like
+	// the TCP path above.
+	m.udpFn = func(ctx context.Context, host string, port int) (net.Conn, error) {
+		sess, err := m.dialUDPSession(ctx, host, port)
+		if err == nil {
+			return sess, nil
+		}
+		if strings.Contains(err.Error(), "HTTP 401") && bearerProvider != nil {
+			fresh, perr := bearerProvider()
+			if perr != nil {
+				return nil, fmt.Errorf("proxy pass refresh failed: %w (first error: %v)", perr, err)
+			}
+			m.UpdatePass(fresh)
+			return m.DialUDP(ctx, host, port)
+		}
+		// Dead pooled session: the failed one was dropped inside DialUDP;
+		// one retry builds a fresh session.
+		if strings.Contains(err.Error(), "handshake timed out") ||
+			strings.Contains(err.Error(), "closed") ||
+			strings.Contains(err.Error(), "reset") {
+			return m.dialUDPSession(ctx, host, port)
+		}
+		return nil, err
 	}
 	// Background keepalive: ping pooled sessions while idle so the server
 	// does not reap them (Mozilla edges drop sessions after a few idle

@@ -633,21 +633,23 @@ redistributions of its own code, which does not apply here.
 
 ## Torrents & UDP
 
-Tunnel MASQUE là luồng TCP thuần (HTTP/2 CONNECT), nên:
+Tunnel MASQUE của Mozilla (fastly-masque, port 2499) hỗ trợ **CONNECT-UDP
+(RFC 9298)** — đã probe trực tiếp: `GET /.well-known/masque/udp/` trả
+"405 method not allowed", tức route tồn tại và chỉ nhận extended CONNECT.
+fxvpn giờ dùng nó để chuyển tiếp UDP:
 
-- **HTTP/HTTPS trackers**: hoạt động bình thường qua SOCKS5.
-- **UDP trackers & DHT**: KHÔNG đi qua tunnel được — SOCKS5 trả
-  "command not supported" và ghi log rõ ràng. Đây là giới hạn của edge
-  Mozilla (không có CONNECT-UDP/CONNECT-IP), không phải lỗi app.
+- **HTTP/HTTPS trackers**: qua SOCKS5 CONNECT (TCP) như trước.
+- **UDP trackers, DHT, DNS**: qua SOCKS5 UDP ASSOCIATE → CONNECT-UDP —
+  datagram được đóng gói thành HTTP Datagram capsules trên cùng edge
+  session với TCP (cùng exit IP, cùng pass rotation).
+- WebRTC/QUIC qua CONNECT-UDP cũng đi được trong phạm vi datagram ≤64KB.
 
 Cấu hình torrent client (qBittorrent) khi dùng fxvpn:
 
 1. Tools → Options → Connection → Proxy server: `SOCKS5`, `127.0.0.1:1080`;
-   tick **"Use proxy for peer connections"** và **"Use proxy for trackers"**
-   (nếu có) — đằng nào UDP cũng bị chặn qua proxy, để client không tự đi
-   ra ngoài làm lộ IP.
-2. Trên tracker URL list: ưu tiên `https://` trackers; `udp://` sẽ hiện
-   "not working" — đó là hành vi đúng.
-3. **Tắt DHT/PeX/LSP** (Options → BitTorrent) và tắt "Enable tracker
-   synchronization" ngoài proxy — nếu không client dùng UDP ngoài tunnel
-   và lộ IP thật.
+   tick **"Use proxy for peer connections"** — để toàn bộ traffic (kể cả
+   UDP) đi qua tunnel, không rò IP thật.
+2. Tracker `udp://` giờ hoạt động qua relay; nếu một tracker cụ thể vẫn
+   lỗi, đó có thể là edge của server đó — thử chọn server khác.
+3. Nếu gặp lỗi ở tab Logs kèm "CONNECT-UDP session failed",edge có thể
+   đã đổi proto — cập nhật bản fxvpn mới hơn.

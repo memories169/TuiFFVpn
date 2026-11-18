@@ -92,7 +92,11 @@ func (a *App) startProxy(host string, port int, bearer string, passExpiry time.T
 	// pinned to the session across pass rotations.
 	log.Printf("proxy: pass expiry at %s (in %s)", passExpiry.Format(time.RFC3339), time.Until(passExpiry).Round(time.Second))
 	a.edgeDialer.SetRenewProvider(bearerProvider, passExpiry)
-	srv := &proxy.Server{Listen: a.ProxyAddr, Dial: a.edgeDialer.Dial}
+	srv := &proxy.Server{
+		Listen:  a.ProxyAddr,
+		Dial:    a.edgeDialer.Dial,
+		DialUDP: a.edgeDialer.DialUDP,
+	}
 	a.proxySrv = srv
 	go func() {
 		if err := srv.ListenAndServe(); err != nil {
