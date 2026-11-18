@@ -324,7 +324,7 @@ jobs:
           needs.macos.result == 'success'
         )
       }}
-     steps:
+    steps:
        - name: Validate release tag
          if: github.event_name == 'workflow_dispatch' && inputs.release_kind != 'ci'
          run: |
