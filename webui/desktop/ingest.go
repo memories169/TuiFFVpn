@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // ingestRequest is the payload POSTed by the userscript — identical shape
@@ -51,25 +52,44 @@ type ingestRequest struct {
 }
 
 // ingestKey returns the configured key, or a freshly generated one when
-// the user didn't set FXVPN_INGEST_KEY (generated per run so a stray
-// open port can't accumulate accounts silently).
-func ingestKey() string {
+// the user didn't set FXVPN_INGEST_KEY. The generated key is PERSISTED in
+// the state file on first boot and reused from then on: a per-run key would
+// break every paired userscript after each app restart (the docker image
+// has no such problem — its key comes from .env), which is exactly the
+// "phải sửa tay ingest key trong userscript" complaint this fixes.
+func (e *Engine) ingestKey() string {
 	if k := os.Getenv("FXVPN_INGEST_KEY"); k != "" {
 		return k
 	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.app.Store.IngestKey != "" {
+		return e.app.Store.IngestKey
+	}
 	buf := make([]byte, 16)
 	_, _ = rand.Read(buf)
-	return hex.EncodeToString(buf)
+	key := hex.EncodeToString(buf)
+	if err := e.app.SetIngestKey(key); err != nil {
+		log.Printf("desktop: persist ingest key failed: %v (key is session-only this run)", err)
+	}
+	return key
 }
 
 // StartIngestServer launches the localhost token receiver (non-blocking).
 func (e *Engine) StartIngestServer(addr string) { e.ingestServer(addr) }
 
-// ingestServer runs the localhost token receiver. It never exits while
-// the engine lives; failures are logged, not fatal — the GUI keeps
-// working without it.
+// IngestKey exposes the active ingest key so the GUI can display it (Logs
+// tab) — users no longer dig through log lines after a restart.
+func (e *Engine) IngestKey() string { return e.ingestKey() }
+
+// IngestEnabled reports whether the user forced FXVPN_INGEST_KEY off
+// ("none" disables the listener).
 func (e *Engine) ingestServer(addr string) {
-	key := ingestKey()
+	if strings.EqualFold(os.Getenv("FXVPN_INGEST_KEY"), "none") {
+		log.Printf("desktop: ingest server disabled (FXVPN_INGEST_KEY=none)")
+		return
+	}
+	key := e.ingestKey() // persisted in state.json; shown/copied in the Logs tab
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/ingest", func(w http.ResponseWriter, r *http.Request) {
 		if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Ingest-Key")), []byte(key)) != 1 {
@@ -99,11 +119,18 @@ func (e *Engine) ingestServer(addr string) {
 		}
 		// Proxy pass pushed too? Store it as the live pass — no Guardian
 		// call from Go. The dialer renews later from Go when it can (or
-		// the userscript pushes a fresh pass again).
+		// the userscript pushes a fresh pass again). The pass is also
+		// PERSISTED (state.LastPass), so a restart reuses it when the edge
+		// 406s fresh Go-side fetches. With a pass in hand, skip the Go
+		// quota probe: from an edge-hostile network it can only earn a
+		// fresh 406 (the "token tự dính 406" complaint) and the quota
+		// headers rode along with the push anyway.
 		if req.ProxyPass != "" {
 			if perr := e.SetIngestedPass(req.Email, req.ProxyPass, req.QuotaMax, req.QuotaLeft); perr != nil {
 				log.Printf("desktop: ingested pass rejected: %v", perr)
 			}
+		} else {
+			go e.app.ProbeQuota(req.AccessToken, req.Email)
 		}
 		log.Printf("desktop: ingested OAuth tokens for %s (PC browser)", req.Email)
 		writeIngestJSON(w, http.StatusOK, map[string]any{"ok": true, "stored": "oauth", "email": req.Email})
@@ -115,7 +142,7 @@ func (e *Engine) ingestServer(addr string) {
 		log.Printf("desktop: ingest server unavailable on %s: %v (userscript push disabled)", addr, err)
 		return
 	}
-	log.Printf("desktop: ingest server on http://%s/api/ingest (X-Ingest-Key=%s)", addr, key)
+	log.Printf("desktop: ingest server on http://%s/api/ingest (X-Ingest-Key=%s — persisted, same key after restarts; see Logs tab)", addr, key)
 	go func() {
 		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			log.Printf("desktop: ingest server stopped: %v", err)

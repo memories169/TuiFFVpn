@@ -253,6 +253,10 @@ func (a *App) SetIngestedPass(email, rawPass, quotaMax, quotaLeft string) error 
 	a.currentPass = pass.RawToken
 	a.ingested = &ingestedPass{rawToken: pass.RawToken, expiry: pass.ExpiresAt()}
 	sel := a.Store.Selected
+	// Persist the browser-fetched pass: after a restart (when the edge 406s
+	// every Go-side fetch) the boot restore reuses it — this is what makes
+	// the userscript flow survive restarts on edge-hostile networks.
+	a.SetLastPassLocked(pass, email)
 	a.mu.Unlock()
 	if err := a.Store.Save(); err != nil {
 		return err
@@ -262,12 +266,12 @@ func (a *App) SetIngestedPass(email, rawPass, quotaMax, quotaLeft string) error 
 	if sel.ServerHost != "" && sel.ServerPort != 0 {
 		a.mu.Lock()
 		active := a.Store.ActiveAccount()
-		var email string
+		var activeEmail string
 		if active != nil {
-			email = active.Email
+			activeEmail = active.Email
 		}
 		a.mu.Unlock()
-		if email != "" {
+		if activeEmail != "" {
 			a.startProxy(sel.ServerHost, sel.ServerPort, pass.Bearer(), pass.ExpiresAt())
 		}
 	}
@@ -336,23 +340,47 @@ func (a *App) SelectAndStart(ctx context.Context, countryCode, countryName, city
 
 	pass, err := a.fetchProxyPassWithRefresh(requestWithContext(ctx), token)
 	if err != nil {
-		// The Go-side fetch is edge-blocked (406 family). A pass pushed by
-		// the PC userscript (fetched in the trusted browser) may still be
-		// live — use it rather than failing outright.
+		// The Go-side fetch is edge-blocked (406 family). Fall back to the
+		// PERSISTED pass first (fresh across restarts — saved on every
+		// successful fetch), then to a pass the userscript pushed this
+		// session; a restart on an edge-hostile network must not leave the
+		// user without a tunnel.
 		a.mu.Lock()
+		pp := a.Store.LastPass
 		ip := a.ingested
+		active := a.Store.ActiveAccount()
+		activeEmail := ""
+		if active != nil {
+			activeEmail = active.Email
+		}
 		a.mu.Unlock()
-		if ip != nil && ip.rawToken != "" && time.Now().Before(ip.expiry.Add(-time.Minute)) {
+
+		var pick func() (*guardian.ProxyPass, bool)
+		if pp.RawToken != "" && (pp.Email == "" || pp.Email == activeEmail) {
+			// Persisted pass belongs to the active account (or email unknown).
+			pick = func() (*guardian.ProxyPass, bool) {
+				if !pp.Usable() || time.Until(pp.ExpiresAt) < time.Minute {
+					return nil, false
+				}
+				p, perr := guardian.NewProxyPassFromRaw(pp.RawToken, pp.QuotaMax, pp.QuotaLeft, "")
+				return p, perr == nil
+			}
+		}
+		if pick != nil {
+			if p, ok := pick(); ok {
+				log.Printf("webui: pass fetch edge-blocked (%v) — using the persisted pass (valid until %s)", err, pp.ExpiresAt.Format("15:04:05"))
+				pass = p
+			}
+		}
+		if pass == nil && ip != nil && ip.rawToken != "" && time.Now().Before(ip.expiry.Add(-time.Minute)) {
 			log.Printf("webui: pass fetch edge-blocked (%v) — using the ingested pass until %s", err, ip.expiry.Format("15:04:05"))
 			var perr error
 			pass, perr = guardian.NewProxyPassFromRaw(ip.rawToken, "", "", "")
 			if perr != nil {
-				a.mu.Lock()
-				a.lastErr = err.Error()
-				a.mu.Unlock()
-				return err
+				pass = nil
 			}
-		} else {
+		}
+		if pass == nil {
 			a.mu.Lock()
 			a.lastErr = err.Error()
 			a.mu.Unlock()
@@ -363,15 +391,17 @@ func (a *App) SelectAndStart(ctx context.Context, countryCode, countryName, city
 	a.lastErr = ""
 	a.mu.Unlock()
 
-	a.mu.Lock()
-	active := a.Store.ActiveAccount()
 	var email string
-	if active != nil {
+	a.mu.Lock()
+	if active := a.Store.ActiveAccount(); active != nil {
 		email = active.Email
 		active.QuotaMax = pass.QuotaMax
 		active.QuotaLeft = pass.QuotaLeft
 		active.CheckedAt = time.Now()
 	}
+	// Snapshot the pass for the NEXT boot: if the edge 406s every Go-side
+	// fetch after a restart, the tunnel still comes back with this pass.
+	a.SetLastPassLocked(pass, email)
 	a.mu.Unlock()
 	if email != "" {
 		a.saveState()

@@ -17,8 +17,10 @@
 package state
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -97,6 +99,59 @@ type Store struct {
 	Active   string    `json:"active_account,omitempty"` // email of the account the proxy uses
 	Tokens   Tokens    `json:"tokens"`                   // legacy single-account field, kept for migration
 	Selected Selected  `json:"selected"`
+	// IngestKey pins the localhost ingest key so it SURVIVES restarts. A
+	// regenerated key would break every paired userscript after each app
+	// update (the docker image never has this problem: FXVPN_INGEST_KEY
+	// comes from .env), so the desktop app persists its key on first boot
+	// and reuses it forever. See desktop.ingestKey.
+	IngestKey string `json:"ingest_key,omitempty"`
+	// LastPass is the most recent proxy pass JWT together with the account
+	// it belongs to and its parsed expiry. The boot restore (and Connect)
+	// falls back to it when the Fastly edge 406s every Go-side pass fetch
+	// right after a restart — a pass that worked minutes ago usually still
+	// works. Without it, a restart on an edge-hostile network could not
+	// open the tunnel at all until the user re-pushed from the userscript.
+	LastPass PersistedPass `json:"last_pass,omitempty"`
+}
+
+// PersistedPass is the state-file snapshot of the live proxy pass.
+type PersistedPass struct {
+	RawToken  string    `json:"raw_token"`
+	Email     string    `json:"email,omitempty"`
+	ExpiresAt time.Time `json:"expires_at"`
+	SavedAt   time.Time `json:"saved_at"`
+	QuotaMax  string    `json:"quota_max,omitempty"`
+	QuotaLeft string    `json:"quota_left,omitempty"`
+}
+
+// Usable reports whether the persisted pass can still be tried: present,
+// parsed, and not yet expired (the caller decides how close to expiry is
+// close enough).
+func (p PersistedPass) Usable() bool {
+	if p.RawToken == "" || p.ExpiresAt.IsZero() {
+		return false
+	}
+	return time.Now().Before(p.ExpiresAt)
+}
+
+// SetLastPass parses a raw proxy-pass JWT and stores it on the store. It
+// returns false when the token is not a parseable JWT (nothing is written).
+func (s *Store) SetLastPass(rawToken, email, quotaMax, quotaLeft string) bool {
+	claims, err := guardianParseJWT(rawToken)
+	if err != nil {
+		return false
+	}
+	if s.LastPass.RawToken != rawToken {
+		s.LastPass = PersistedPass{
+			RawToken:  rawToken,
+			Email:     email,
+			ExpiresAt: time.Unix(claims.Exp, 0),
+			SavedAt:   time.Now(),
+			QuotaMax:  quotaMax,
+			QuotaLeft: quotaLeft,
+		}
+	}
+	return true
 }
 
 // FindAccount returns the account with the given email, or nil.
@@ -356,4 +411,40 @@ func parseQuota(s string) float64 {
 		return 0
 	}
 	return n * mult
+}
+
+// jwtClaims is the subset of proxy-pass JWT claims the state file needs.
+// A state-local copy (guardian's parseJWT is unexported and state must not
+// import guardian).
+type jwtClaims struct {
+	Exp int64
+}
+
+// guardianParseJWT extracts the exp claim from a proxy-pass JWT.
+func guardianParseJWT(token string) (jwtClaims, error) {
+	var c jwtClaims
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return c, errors.New("invalid JWT")
+	}
+	dec, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return c, err
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(dec, &claims); err != nil {
+		return c, err
+	}
+	switch v := claims["exp"].(type) {
+	case float64:
+		c.Exp = int64(v)
+	case string:
+		var n int64
+		fmt.Sscan(v, &n)
+		c.Exp = n
+	}
+	if c.Exp == 0 {
+		return c, errors.New("proxy pass JWT has no exp claim")
+	}
+	return c, nil
 }

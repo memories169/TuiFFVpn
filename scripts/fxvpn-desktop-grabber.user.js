@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Firefox VPN Token Grabber (Desktop app)
 // @namespace    fxvpn-desktop
-// @version      1.0.0
+// @version      1.0.1
 // @license      GPL-3.0-only
 // @description  Bắt sessionToken từ Firefox Accounts trong TRÌNH DUYỆT THẬT của bạn, tự copy vào clipboard, hiện trong panel. Dán vào app desktop (fxvpn-desktop) vào ô "Session token (từ đăng nhập browser)" rồi bấm "Đổi session thành token". Bản này KHÔNG dành cho container docker (bản đó là fxvpn-pc-grabber.user.js).
 // @author       you
@@ -50,11 +50,14 @@
   // browser thật mới qua được edge.
   var EXCHANGE_ON_PC = true;
   // URL ingest của app desktop — khớp flag --ingest / FXVPN_INGEST_ADDR
-  // (mặc định 127.0.0.1:9091). Nhìn key trong tab Logs của app khi boot:
-  // "desktop: ingest server on ... (X-Ingest-Key=...)".
+  // (mặc định 127.0.0.1:9091).
   var CONSOLE_URL = 'http://127.0.0.1:9091';
-  // FXVPN_INGEST_KEY đã set trong môi trường app — dán giá trị vào đây để
-  // khớp. Bỏ trống = dùng key tự sinh (xem tab Logs).
+  // FXVPN_INGEST_KEY của app desktop. App SinH key một lần rồi LƯU VĨNH VIỄN
+  // trong state.json — key KHÔNG ĐỔI qua các lần khởi động lại, nên bạn chỉ
+  // cần dán key vào đây MỘT LẦN. Xem/copy key trong tab Logs của app
+  // (banner "Ingest key (userscript)"). Lưu ý: nếu bạn từng set biến môi
+  // trường FXVPN_INGEST_KEY thì key đó ưu tiên hơn và banner Logs vẫn hiện
+  // giá trị đúng.
   var INGEST_KEY = '';
   // (Tùy chọn) Cloudflare Worker relayer — giống hệt relayer/worker.js của
   // FoxyVPN gốc / bản grabber cho container. Khi Fastly chặn IP/ASN mạng bạn
@@ -355,7 +358,7 @@
         setStatus('<b style="color:#8fffb0">xong ✓ app desktop đã lưu OAuth tokens</b>' + (payload.email ? ' — ' + esc(payload.email) : ''));
         setOutput(body);
       } else if (/invalid ingest key/i.test(body.error || '')) {
-        setStatus('<b style="color:#ff6b6b">INGEST_KEY sai</b> — đối chiếu FXVPN_INGEST_KEY (env của app) với INGEST_KEY (script); hoặc copy key từ tab Logs của app.');
+        setStatus('<b style="color:#ff6b6b">INGEST_KEY sai</b> — mở tab Logs của app, copy key từ banner "Ingest key (userscript)" rồi dán vào INGEST_KEY ở đầu script này (key cố định, chỉ cần làm một lần).');
         setOutput(body);
       } else {
         setStatus('<b style="color:#ff6b6b">app lỗi (HTTP ' + r.status + '):</b> ' + esc((body.error || '').slice(0, 180)));

@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"fxsocks/webui/internal/fxa"
 	"fxsocks/webui/internal/guardian"
 	"fxsocks/webui/internal/state"
 )
@@ -163,13 +164,20 @@ func (a *App) keeperOnce() {
 }
 
 // restoreSelectedOnBoot restarts the proxy on the persisted server selection
-// (if any) after a container restart. Runs in the background: failures are
-// logged and the user can re-select from the UI. The full healing chain
+// (if any) after a container/desktop restart. Runs in the background: failures
+// are logged and the user can re-select from the UI. The full healing chain
 // (token refresh, entitlement activation, pass fetch) runs as part of it.
+//
+// Edge-hostile networks (Fastly 406 on every Go-side call right after boot)
+// fall back to the PERSISTED proxy pass — the same pass that was working
+// minutes ago — so the tunnel comes back without any user action. This is
+// what makes the desktop app "tự nhớ máy chủ + tự kết nối lại" like the
+// docker image, even when the edge is blocking fresh Go requests.
 func (a *App) restoreSelectedOnBoot() {
 	a.mu.Lock()
 	sel := a.Store.Selected
 	hasAccount := a.Store.ActiveAccount() != nil
+	lastPass := a.Store.LastPass
 	a.mu.Unlock()
 
 	if !hasAccount {
@@ -183,6 +191,30 @@ func (a *App) restoreSelectedOnBoot() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if err := a.restartProxyOnActive(ctx, sel.ServerHost, sel.ServerPort); err != nil {
+		// Edge-blocked covers BOTH the Guardian 406 and the FxA token
+		// refresh 406 behind it (fxa.ErrFastlyChallenge) — a network
+		// condition, not an account problem. Reuse the persisted pass
+		// (fresh across restarts) so the tunnel still comes back; without
+		// this a restart on an edge-hostile network could never reconnect.
+		if guardian.IsEdgeBlocked(err) || errors.Is(err, fxa.ErrFastlyChallenge) {
+			// Try the persisted pass before giving up. 30 min of margin —
+			// Guardian passes are account-scoped and survive process
+			// restarts; a freshly-used one is almost always live.
+			if lastPass.Usable() && time.Until(lastPass.ExpiresAt) > 30*time.Minute {
+				log.Printf("boot: pass/token fetch edge-blocked (%v) — reusing the persisted proxy pass for %s (valid until %s)",
+					err, lastPass.Email, lastPass.ExpiresAt.Format("15:04:05"))
+				a.mu.Lock()
+				a.currentPass = lastPass.RawToken
+				a.ingested = &ingestedPass{rawToken: lastPass.RawToken, expiry: lastPass.ExpiresAt}
+				a.mu.Unlock()
+				a.startProxy(sel.ServerHost, sel.ServerPort, "Bearer "+lastPass.RawToken, lastPass.ExpiresAt)
+				a.suppressNextRotate.Store(true)
+				log.Printf("boot: proxy restored on %s:%d with the persisted pass (last selected server)", sel.ServerHost, sel.ServerPort)
+				return
+			}
+			log.Printf("boot: pass/token fetch edge-blocked (%v) and no persisted pass available — the rotator/keeper will retry; you can also re-push from the userscript", err)
+			return
+		}
 		log.Printf("boot: auto-connect to %s:%d failed: %v (re-select the server in the UI once tokens are healthy)", sel.ServerHost, sel.ServerPort, err)
 		return
 	}
@@ -191,6 +223,15 @@ func (a *App) restoreSelectedOnBoot() {
 
 // rotateOnce evaluates and performs one rotation if needed.
 func (a *App) rotateOnce() {
+	// Right after a boot restore on the persisted pass the tunnel is healthy
+	// but the edge still 406s fresh Go fetches — evaluating rotation would
+	// only burn edge calls (and risk switching off a working account).
+	// Skip the FIRST pass; the second one (30 min later) checks for real.
+	if a.suppressNextRotate.CompareAndSwap(true, false) {
+		log.Printf("rotator: first pass after a persisted-pass boot restore skipped — tunnel already up, next pass checks normally")
+		return
+	}
+
 	a.mu.Lock()
 	ac := a.Store.ActiveAccount()
 	if ac == nil {
@@ -389,6 +430,15 @@ func (a *App) refreshProxyPass(ctx context.Context) (*guardian.ProxyPass, error)
 		}
 	}
 	if err != nil {
+		// The Fastly edge 406'd the fetch OR the FxA token refresh behind
+		// it — a NETWORK condition, not an account problem. Failover would
+		// chain 406s across every other account (the "token dính 406 after
+		// restart" storm) and wreck accounts for no gain. Keep the current
+		// account; the keeper will retry the same account when the edge
+		// relents.
+		if guardian.IsEdgeBlocked(err) || errors.Is(err, fxa.ErrFastlyChallenge) {
+			return nil, err
+		}
 		// The active account genuinely has no usable pass (token expired,
 		// refresh blocked by a Fastly challenge). The switch itself already
 		// succeeded — the proxy just cannot restart on it yet. Fail over to
@@ -416,6 +466,7 @@ func (a *App) refreshProxyPass(ctx context.Context) (*guardian.ProxyPass, error)
 		ac.CheckedAt = time.Now()
 		_ = a.Store.Save()
 	}
+	a.SetLastPassLocked(pass, a.Store.Active)
 	a.mu.Unlock()
 	return pass, nil
 }

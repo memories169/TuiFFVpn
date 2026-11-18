@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"fxsocks/webui/internal/fxa"
@@ -71,6 +72,32 @@ type App struct {
 	suspectEdge string
 	// refreshAll tracks the manual "refresh all tokens" pass (UI button).
 	refreshAll refreshAllState
+	// suppressNextRotate is set when boot restored the tunnel with the
+	// persisted proxy pass (the edge is 406ing fresh fetches): the FIRST
+	// rotation pass is skipped so a healthy-by-all-accounts tunnel is not
+	// churned (and no pointless edge-storm of Guardian calls is fired).
+	suppressNextRotate atomic.Bool
+}
+
+// SetLastPassLocked snapshots the fetched pass into the store for the boot
+// fallback (persisted pass survives restarts). Caller holds a.mu.
+func (a *App) SetLastPassLocked(pass *guardian.ProxyPass, email string) {
+	if pass == nil || pass.RawToken == "" {
+		return
+	}
+	a.Store.SetLastPass(pass.RawToken, email, pass.QuotaMax, pass.QuotaLeft)
+}
+
+// SetIngestKey stores the desktop ingest key and persists the state file
+// (locked like every other Store mutation).
+func (a *App) SetIngestKey(key string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.Store.IngestKey == key {
+		return nil
+	}
+	a.Store.IngestKey = key
+	return a.Store.Save()
 }
 
 // New builds an App.

@@ -364,9 +364,14 @@ func passDeadline(expiresAt time.Time) time.Time {
 
 // renewalLoop renews the pass ~60 s before its (5-min-capped) deadline,
 // indefinitely. Sessions are never touched — only the pass is swapped.
+// Failed renewals back off exponentially (15 s → 30 s → 60 s → … capped at
+// 4 min): a Fastly edge 406 on every Go-side fetch used to turn this loop
+// into a Guardian-call storm every 15 s, which only refreshed the edge's
+// bot score and earned more 406s.
 func (m *MasqueDialer) renewalLoop(expiresAt time.Time) {
 	deadline := passDeadline(expiresAt)
 	log.Printf("proxy: pass renewal scheduled deadline=%s", deadline.Format(time.RFC3339))
+	backoff := 15 * time.Second
 	for {
 		delay := time.Until(deadline.Add(-60 * time.Second))
 		if delay <= 0 {
@@ -383,15 +388,20 @@ func (m *MasqueDialer) renewalLoop(expiresAt time.Time) {
 		log.Printf("proxy: pass renewal starting (deadline %s)", deadline.Format(time.RFC3339))
 		np, err := m.renewProvider()
 		if err != nil {
-			log.Printf("proxy: pass renewal failed: %v — retrying in 15s", err)
-			// Retry shortly; the in-band 401 path still covers us.
+			log.Printf("proxy: pass renewal failed: %v — retrying in %s", err, backoff)
+			// Retry after backing off; the in-band 401 path still covers us.
 			select {
 			case <-m.renewStop:
 				return
-			case <-time.After(15 * time.Second):
+			case <-time.After(backoff):
+			}
+			backoff *= 2
+			if backoff > 4*time.Minute {
+				backoff = 4 * time.Minute
 			}
 			continue
 		}
+		backoff = 15 * time.Second
 		m.UpdatePass(np)
 		deadline = time.Now().Add(passDeadlineCap - 30*time.Second)
 		log.Printf("proxy: pass renewed successfully deadline=%s session=retained", deadline.Format(time.RFC3339))

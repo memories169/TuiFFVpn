@@ -93,6 +93,8 @@ func (a *App) handleSelect(w http.ResponseWriter, r *http.Request) {
 		active.QuotaLeft = pass.QuotaLeft
 		active.CheckedAt = time.Now()
 	}
+	// Persist the pass for the boot fallback (edge-blocked restarts reuse it).
+	a.SetLastPassLocked(pass, email)
 	a.mu.Unlock()
 	if email != "" {
 		a.saveState()
@@ -132,6 +134,11 @@ func (a *App) fetchProxyPassWithRefresh(r *http.Request, token string) (*guardia
 	gc := &guardian.Client{Endpoint: a.Guardian, Token: token}
 	pass, err := gc.FetchProxyPass(r.Context())
 	if err == nil {
+		a.mu.Lock()
+		if active := a.Store.ActiveAccount(); active != nil {
+			a.SetLastPassLocked(pass, active.Email)
+		}
+		a.mu.Unlock()
 		return pass, nil
 	}
 	if !errors.Is(err, guardian.ErrTokenInvalid) {
@@ -158,6 +165,11 @@ func (a *App) fetchProxyPassWithRefresh(r *http.Request, token string) (*guardia
 	gc2 := &guardian.Client{Endpoint: a.Guardian, Token: tok}
 	pass2, err2 := gc2.FetchProxyPass(r.Context())
 	if err2 == nil {
+		a.mu.Lock()
+		if active := a.Store.ActiveAccount(); active != nil {
+			a.SetLastPassLocked(pass2, active.Email)
+		}
+		a.mu.Unlock()
 		return pass2, nil
 	}
 	// Free-tier accounts are not entitled until activated. Provision the
@@ -165,6 +177,11 @@ func (a *App) fetchProxyPassWithRefresh(r *http.Request, token string) (*guardia
 	if errors.Is(err2, guardian.ErrTokenInvalid) {
 		if _, aerr := gc2.Activate(r.Context()); aerr == nil {
 			if pass3, err3 := gc2.FetchProxyPass(r.Context()); err3 == nil {
+				a.mu.Lock()
+				if active := a.Store.ActiveAccount(); active != nil {
+					a.SetLastPassLocked(pass3, active.Email)
+				}
+				a.mu.Unlock()
 				return pass3, nil
 			}
 		}

@@ -402,7 +402,10 @@ Troubleshooting the PC path:
   “Đổi token lại”.
 - **errno 172** — the code expired between the two steps; just retry.
 - **"invalid ingest key"** — `INGEST_KEY` in the userscript must equal
-  `FXVPN_INGEST_KEY` in docker-compose.yml.
+  `FXVPN_INGEST_KEY` in docker-compose.yml. On the **desktop app** the key
+  is auto-generated ONCE and persisted in `state.json` (tab Logs shows a
+  copyable banner) — it no longer changes on restart, so the userscript
+  only needs it pasted once.
 - **"không gọi được container"** — CONSOLE_URL host/port wrong, or the
   console port is not published when the PC is a different machine.
 

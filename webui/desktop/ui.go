@@ -115,6 +115,7 @@ type UI struct {
 	logsEdit  widget.Editor
 	logsCopy  widget.Clickable
 	logsClear widget.Clickable
+	keyCopy   widget.Clickable
 	testBusy  bool
 	testMsg   string
 
@@ -221,6 +222,13 @@ func (u *UI) handleClicks() {
 	if u.logsClear.Clicked(u.frameCtx) {
 		u.engine.ClearLogs()
 		u.toastMsg("Đã xoá log", false)
+	}
+	if u.keyCopy.Clicked(u.frameCtx) {
+		u.frameCtx.Execute(clipboard.WriteCmd{
+			Type: "application/text",
+			Data: io.NopCloser(strings.NewReader(u.engine.IngestKey())),
+		})
+		u.toastMsg("Đã copy ingest key — dán vào INGEST_KEY trong userscript (một lần, key không đổi)", false)
 	}
 	if u.refreshAll.Clicked(u.frameCtx) {
 		go u.doRefreshAll()
@@ -892,7 +900,54 @@ func (u *UI) layoutLogs(gtx layout.Context) layout.Dimensions {
 		u.logsEdit.SetText("(chưa có log)")
 	}
 
+	// Ingest key banner: the userscript pairing key — stable across
+	// restarts (persisted in state.json), so userscript users only ever
+	// paste it once.
+	key := u.engine.IngestKey()
+
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return widget.Border{
+				Color:        Surface1,
+				CornerRadius: unit.Dp(8),
+				Width:        unit.Dp(1),
+			}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				background(gtx, withAlpha(Lavender, 20))
+				return layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							t := material.Body2(u.th(), "Ingest key (userscript) — KHÔNG ĐỔI sau khi khởi động lại, chỉ cần dán vào INGEST_KEY một lần:")
+							t.Color = Subtext1
+							t.TextSize = unit.Sp(11)
+							return t.Layout(gtx)
+						}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return layout.Spacer{Height: unit.Dp(6)}.Layout(gtx)
+						}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+								layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+									t := material.Body1(u.th(), key)
+									t.Color = Lavender
+									t.TextSize = unit.Sp(12)
+									return t.Layout(gtx)
+								}),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									btn := material.Button(u.th(), &u.keyCopy, "📋 Copy key")
+									btn.Background = Lavender
+									btn.Color = Crust
+									btn.TextSize = unit.Sp(12)
+									btn.CornerRadius = unit.Dp(6)
+									btn.Inset = layout.UniformInset(unit.Dp(6))
+									return btn.Layout(gtx)
+								}),
+							)
+						}),
+					)
+				})
+			})
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions { return layout.Spacer{Height: unit.Dp(8)}.Layout(gtx) }),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {

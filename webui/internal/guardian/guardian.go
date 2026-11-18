@@ -41,6 +41,28 @@ var ErrQuotaExceeded = errors.New("quota exceeded")
 // ErrTokenInvalid indicates the access token was rejected (no entitlement).
 var ErrTokenInvalid = errors.New("token invalid")
 
+// ErrEdgeBlocked marks the Fastly anti-bot 406 family: the request never
+// reached the Guardian API, so it says NOTHING about the account's health.
+// Callers (webapp) branch on this to keep the current account, fall back to
+// a persisted pass, and NEVER rotate/failover — every alternative account's
+// fetch would hit the same edge.
+var ErrEdgeBlocked = errors.New("edge blocked (Fastly anti-bot)")
+
+// IsEdgeBlocked reports whether err is the Fastly anti-bot 406 family.
+// Is() unwraps the fmt.Errorf wrapping; the textual fallback catches the
+// plain "HTTP 406" wording from older call sites.
+func IsEdgeBlocked(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrEdgeBlocked) {
+		return true
+	}
+	// doFull returns "HTTP %d" after exhausting retries (wrapped by callers
+	// with %w where possible); match the 406 marker textually as a fallback.
+	return strings.Contains(err.Error(), "HTTP 406")
+}
+
 // ProxyPass is a parsed proxy-pass JWT plus quota headers.
 type ProxyPass struct {
 	RawToken   string
@@ -79,6 +101,50 @@ type Client struct {
 	solveOnce sync.Once
 }
 
+// edgeCookieMu guards the process-wide solved-challenge cookie cache: the
+// cookies one Guardian client earned (webapp builds a fresh Client per
+// fetch) are replayed by every other client, so the whole process keeps
+// benefiting from ONE successful challenge solve.
+var (
+	edgeCookieMu sync.Mutex
+	edgeCookies  map[string][]*http.Cookie // base endpoint URL → earned cookies
+)
+
+// rememberEdgeCookies stashes the challenge cookies a client's jar holds.
+func rememberEdgeCookies(base string, jar http.CookieJar) {
+	u, err := url.Parse(base + "/")
+	if err != nil || jar == nil {
+		return
+	}
+	cs := jar.Cookies(u)
+	if len(cs) == 0 {
+		return
+	}
+	edgeCookieMu.Lock()
+	if edgeCookies == nil {
+		edgeCookies = make(map[string][]*http.Cookie)
+	}
+	edgeCookies[base] = cs
+	edgeCookieMu.Unlock()
+}
+
+// reuseEdgeCookies installs cookies previously earned by another client for
+// this endpoint (same bot-score network → same challenge → same cookie).
+func (c *Client) reuseEdgeCookies(base string) {
+	if c.Jar == nil {
+		return
+	}
+	edgeCookieMu.Lock()
+	cs := edgeCookies[base]
+	edgeCookieMu.Unlock()
+	if len(cs) == 0 {
+		return
+	}
+	if u, err := url.Parse(base + "/"); err == nil {
+		c.Jar.SetCookies(u, cs)
+	}
+}
+
 func (c *Client) endpoint() string {
 	if c.Endpoint == "" {
 		return DefaultEndpoint
@@ -108,6 +174,10 @@ func (c *Client) doFull(ctx context.Context, method, path string) ([]byte, http.
 	if c.Jar == nil {
 		c.Jar, _ = cookiejar.New(nil)
 	}
+	// Seed this fresh client's jar with cookies another client already
+	// earned from the edge (webapp builds a new Client per fetch; without
+	// this every fetch re-solves the challenge from scratch).
+	c.reuseEdgeCookies(c.endpoint())
 
 	var body []byte
 	var hdr http.Header
@@ -134,6 +204,9 @@ func (c *Client) doFull(ctx context.Context, method, path string) ([]byte, http.
 				if u, perr := url.Parse(base + "/"); perr == nil {
 					c.Jar.SetCookies(u, cookies)
 				}
+				// Publish the earned cookies so every other Guardian client
+				// in this process replays them instead of re-solving.
+				rememberEdgeCookies(base, c.Jar)
 			})
 		}
 		var req *http.Request
@@ -164,7 +237,14 @@ func (c *Client) doFull(ctx context.Context, method, path string) ([]byte, http.
 		}
 	}
 	if err == nil {
-		err = fmt.Errorf("HTTP %d", status)
+		if status == http.StatusNotAcceptable {
+			// Fastly anti-bot: the request never reached Guardian. Mark it
+			// so callers treat this as a network/edge condition (retry,
+			// fall back to a persisted pass) instead of a token problem.
+			err = fmt.Errorf("%w: the Fastly edge answered HTTP 406 (anti-bot) — the request never reached Guardian", ErrEdgeBlocked)
+		} else {
+			err = fmt.Errorf("HTTP %d", status)
+		}
 	}
 	return body, hdr, status, err
 }

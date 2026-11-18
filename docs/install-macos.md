@@ -56,6 +56,12 @@ go build -o fxvpn-desktop ./webui/desktop/cmd/fxvpn-desktop
      clipboard; dán vào form "Thêm bằng token" (email + access +
      refresh). Chỉ request từ browser thật mới qua được edge khi IP bị
      CAPTCHA-lock.
+
+     Cách tốt hơn: dán **ingest key** (tab Logs của app, banner
+     "Ingest key (userscript)") vào `INGEST_KEY` ở đầu userscript — một
+     lần duy nhất, vì key được lưu vĩnh viễn trong `state.json` và KHÔNG
+     ĐỔI sau khi khởi động lại app. Sau đó userscript tự đẩy cả bộ
+     email + access + refresh + proxy pass vào app, không cần dán tay.
 - SOCKS5 proxy lắng nghe `127.0.0.1:1080` (đổi bằng `--socks 127.0.0.1:9999`)
 - Cấu hình lưu tại `~/Library/Application Support/fxvpn/state.json`
 

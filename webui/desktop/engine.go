@@ -248,12 +248,14 @@ func (e *Engine) completeSession(ctx context.Context, sessionToken, email string
 
 // AddAccountWithTokens stores an OAuth token pair directly (the "paste
 // tokens" flow, used when Fastly serves the account an unsolvable CAPTCHA).
+// probeQuota is skipped on purpose: from an edge-hostile network the Go-side
+// Guardian fetch earns a fresh 406 (and pasted tokens usually arrive with
+// quota headers via the userscript push instead). Pass "" to probe anyway.
 func (e *Engine) AddAccountWithTokens(email, access, refresh string, expiresIn int) error {
 	if refresh == "" && access == "" {
 		return errors.New("cần ít nhất một token")
 	}
 	e.app.UpsertAccount(email, access, refresh, expiresIn)
-	e.app.ProbeQuota(access, email)
 	return nil
 }
 
