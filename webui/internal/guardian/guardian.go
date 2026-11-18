@@ -17,6 +17,7 @@
 package guardian
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -249,6 +250,14 @@ func (c *Client) doFull(ctx context.Context, method, path string) ([]byte, http.
 	return body, hdr, status, err
 }
 
+// truncate clamps a byte string for log lines.
+func truncate(b []byte, n int) string {
+	if len(b) <= n {
+		return string(b)
+	}
+	return string(b[:n]) + "..."
+}
+
 // firefoxUA mirrors the UA the FxA edge accepts (fxa.DefaultBrowserUA —
 // kept as a literal to avoid an import cycle; the two packages share the
 // Fastly edge but not their clients).
@@ -390,4 +399,97 @@ func parseJWT(token string) (jwtClaims, error) {
 		}
 	}
 	return c, nil
+}
+
+// ─── WireGuard device registration ───────────────────────────────────────────
+// The Mozilla VPN client registers a Curve25519 keypair as a "device" via
+// POST /api/v1/vpn/device {name, unique_id, pubkey} and receives a
+// device-scoped tunnel IP pair (ipv4_address, ipv6_address). With a device
+// registered, the account's WireGuard tunnel endpoints become usable — full
+// UDP capability (torrent trackers, DHT) that the FPN proxy-pass path
+// cannot offer (the edge 502s CONNECT-UDP to non-allowlisted destinations).
+
+// WGDevice is one registered WireGuard device (Guardian /vpn/device shape).
+type WGDevice struct {
+	Name       string `json:"name"`
+	UniqueID   string `json:"unique_id"`
+	CreatedAt  string `json:"created_at"`
+	PublicKey  string `json:"pubkey"`
+	IPv4       string `json:"ipv4_address"`
+	IPv6       string `json:"ipv6_address"`
+}
+
+// RegisterDevice registers (or idempotently re-registers) a WireGuard device
+// keypair with Guardian. accessToken is the FxA OAuth access token (the same
+// one the official client sends: `request->auth()` uses the FxA bearer, NOT
+// the FPN proxy pass). Guardian replies 201 with the device JSON carrying
+// the assigned tunnel IPs.
+func (c *Client) RegisterDevice(ctx context.Context, name, uniqueID, publicKey string) (*WGDevice, error) {
+	payload, err := json.Marshal(map[string]string{
+		"name":      name,
+		"unique_id": uniqueID,
+		"pubkey":    publicKey,
+	})
+	if err != nil {
+		return nil, err
+	}
+	reqURL := c.endpoint() + "/api/v1/vpn/device"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", firefoxUA)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+
+	switch resp.StatusCode {
+	case http.StatusCreated, http.StatusOK:
+		// 201 = created, 200 = already existed (idempotent re-registration).
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return nil, fmt.Errorf("%w: device registration (HTTP %d): %s", ErrTokenInvalid, resp.StatusCode, truncate(body, 200))
+	case http.StatusConflict:
+		return nil, fmt.Errorf("device limit reached (HTTP 409): %s", truncate(body, 200))
+	default:
+		return nil, fmt.Errorf("guardian device HTTP %d: %s", resp.StatusCode, truncate(body, 200))
+	}
+
+	// The device object may come back bare or wrapped in {"device": {...}}.
+	var probe struct {
+		Device *WGDevice `json:"device"`
+		WGDevice
+	}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return nil, fmt.Errorf("parse device: %w", err)
+	}
+	dev := probe.Device
+	if dev == nil {
+		dev = &probe.WGDevice
+	}
+	if dev.IPv4 == "" {
+		return nil, fmt.Errorf("guardian device response missing ipv4_address: %s", truncate(body, 200))
+	}
+	return dev, nil
+}
+
+// FetchWGServers retrieves the WireGuard server list from Guardian
+// (GET /api/v1/vpn/servers) — the list the official client consumes; unlike
+// the RemoteSettings MASQUE list it carries per-server WG fields
+// (public_key, ipv4_gateway, ipv4_addr_in, port_ranges, multihop_port).
+func (c *Client) FetchWGServers(ctx context.Context) (json.RawMessage, error) {
+	body, _, status, err := c.doFull(ctx, http.MethodGet, "/api/v1/vpn/servers")
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("guardian servers HTTP %d: %s", status, body)
+	}
+	return json.RawMessage(body), nil
 }

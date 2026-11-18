@@ -40,6 +40,9 @@ import (
 // App wires the store, control-plane auth, and the proxy server.
 type App struct {
 	mu        sync.Mutex
+	// wgTunnel is the active WireGuard userspace tunnel (WG mode); nil when
+	// running on the MASQUE proxy-pass path.
+	wgTunnel *WGTunnel
 	// UDPBNDAddr overrides the BND.ADDR in SOCKS5 UDP ASSOCIATE replies
 	// (FXVPN_UDP_BND_ADDR) — the docker host's LAN IP so LAN clients can
 	// route datagrams to the relay. nil = RFC default (0.0.0.0).

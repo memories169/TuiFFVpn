@@ -112,6 +112,23 @@ type Store struct {
 	// works. Without it, a restart on an edge-hostile network could not
 	// open the tunnel at all until the user re-pushed from the userscript.
 	LastPass PersistedPass `json:"last_pass,omitempty"`
+	// WGDevice is the WireGuard device identity registered with Guardian
+	// (base64 keypair + assigned tunnel IPs + the account email it belongs
+	// to). Registered once per account via POST /api/v1/vpn/device; with it,
+	// the WireGuard tunnel (full UDP) becomes available alongside MASQUE.
+	WGDevice *WGDeviceState `json:"wg_device,omitempty"`
+}
+
+// WGDeviceState persists the registered WireGuard device.
+type WGDeviceState struct {
+	Name      string `json:"name"`
+	UniqueID  string `json:"unique_id"`
+	PrivKey   string `json:"private_key"`
+	PubKey    string `json:"public_key"`
+	IPv4      string `json:"ipv4_address"`
+	IPv6      string `json:"ipv6_address"`
+	Email     string `json:"email"` // the account the device belongs to
+	CreatedAt string `json:"created_at"`
 }
 
 // PersistedPass is the state-file snapshot of the live proxy pass.
