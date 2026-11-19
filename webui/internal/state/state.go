@@ -120,6 +120,13 @@ type Store struct {
 	// to). Registered once per account via POST /api/v1/vpn/device; with it,
 	// the WireGuard tunnel (full UDP) becomes available alongside MASQUE.
 	WGDevice *WGDeviceState `json:"wg_device,omitempty"`
+	// GuardianJWT is the short-lived JWT Guardian itself mints (via the
+	// browser PKCE login, /api/v2/vpn/login/verify) — the ONLY credential
+	// Guardian's JWT-verified endpoints accept (/vpn/device, /vpn/servers;
+	// the FxA access token gets errno 120 "invalid algorithm" there).
+	GuardianJWT   string    `json:"guardian_jwt,omitempty"`
+	GuardianEmail string    `json:"guardian_email,omitempty"`
+	GuardianJWTAt time.Time `json:"guardian_jwt_at,omitempty"`
 }
 
 // WGServerInfo is a flattened WireGuard server endpoint.

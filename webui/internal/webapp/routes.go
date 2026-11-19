@@ -64,6 +64,11 @@ func (a *App) Routes() http.Handler {
 	// WireGuard mode: connect/stop/status (auth like everything else).
 	mux.HandleFunc("/api/wg/connect", a.requireAuth(a.handleWGConnect))
 	mux.HandleFunc("/api/wg/stop", a.requireAuth(a.handleWGStop))
+	// Guardian browser login (PKCE): start the flow, get the FxA
+	// authorization URL; the callback lands on the console itself
+	// (?code=… — served by the catch-all below) or is pasted manually.
+	mux.HandleFunc("/api/wg/login", a.requireAuth(a.handleWGLoginStart))
+	mux.HandleFunc("/api/wg/login/paste", a.requireAuth(a.handleWGLoginPaste))
 	mux.HandleFunc("/api/wg/status", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(a.WGStatus())
@@ -75,7 +80,10 @@ func (a *App) Routes() http.Handler {
 	// and keep running the PREVIOUS build's UI after an image update (the
 	// new tab appears but its JS is stale — the Logs tab stuck at its
 	// loading placeholder was exactly this).
-	mux.Handle("/", noCache(http.FileServer(http.FS(staticSub()))))
+	// The Guardian login redirect (?code=…) is caught BEFORE the file
+	// server: while a PKCE flow is pending, any GET carrying a code
+	// completes the login.
+	mux.Handle("/", noCache(a.guardianCodeGate(http.FileServer(http.FS(staticSub())))))
 	return mux
 }
 

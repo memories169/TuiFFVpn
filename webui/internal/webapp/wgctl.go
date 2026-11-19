@@ -31,22 +31,24 @@ import (
 
 // ConnectWG brings the WireGuard tunnel up and replaces the SOCKS5 backend
 // (the MASQUE dialer is torn down — one transport at a time on a.Port).
+//
+// Guardian's JWT-verified endpoints (/vpn/device, /vpn/servers) accept ONLY
+// the short-lived JWT Guardian itself mints via the browser PKCE login —
+// the FxA access token gets errno 120 "invalid algorithm". When no JWT is
+// stored (or Guardian rejected it), ConnectWG returns ErrWGLoginNeeded and
+// the UI starts the browser login instead.
 func (a *App) ConnectWG(ctx context.Context) error {
-	// Resolve the active account's (fresh) FxA access token.
-	tok, err := a.activeAccessToken(ctx)
-	if err != nil {
-		return fmt.Errorf("wg: active token: %w", err)
-	}
-
-	// Register (or reuse) the WireGuard device for this account.
-	dev, err := a.EnsureWGDevice(ctx, tok)
-	if err != nil {
-		return fmt.Errorf("wg: device: %w", err)
+	// The device registry and server list need the Guardian JWT.
+	// Registration (EnsureWGDevice) is where the 401 previously surfaced;
+	// resolve the credential up front so the error is actionable.
+	if _, err := a.guardianJWT(); err != nil {
+		return err // ErrWGLoginNeeded — UI shows the Guardian login card
 	}
 
 	// Pick a WG-capable server: same city as the MASQUE selection when
 	// possible, else weighted-random over everything Guardian offers.
-	server, err := a.pickWGServer(ctx, tok)
+	// Needs the JWT too (server list is JWT-verified).
+	server, err := a.pickWGServer(ctx)
 	if err != nil {
 		return fmt.Errorf("wg: server: %w", err)
 	}
@@ -62,7 +64,7 @@ func (a *App) ConnectWG(ctx context.Context) error {
 	}
 	a.mu.Unlock()
 
-	if err := a.StartWGProxy(ctx, tok, server); err != nil {
+	if err := a.StartWGProxy(ctx, server); err != nil {
 		log.Printf("wg: tunnel start failed — restoring MASQUE backend: %v", err)
 		a.mu.Lock()
 		sel := a.Store.Selected
@@ -74,8 +76,13 @@ func (a *App) ConnectWG(ctx context.Context) error {
 		}
 		return err
 	}
+	dev := a.Store.WGDevice
+	devDesc := "?"
+	if dev != nil {
+		devDesc = dev.PubKey[:8] + "…"
+	}
 	log.Printf("wg: connected — device %s, tunnel %s, server %s (%s:%d)",
-		dev.PubKey[:8]+"…", dev.IPv4, server.Hostname, server.IPv4AddrIn, server.Port)
+		devDesc, dev.IPv4, server.Hostname, server.IPv4AddrIn, server.Port)
 	return nil
 }
 
@@ -112,11 +119,16 @@ func (a *App) activeAccessToken(ctx context.Context) (string, error) {
 	return tok, nil
 }
 
-// pickWGServer fetches Guardian's WG server list and chooses one: the city
-// matching the current MASQUE selection if Guardian has it, else weighted
-// random (same weight semantics as the official client).
-func (a *App) pickWGServer(ctx context.Context, accessToken string) (state.WGServerInfo, error) {
-	gc := &guardian.Client{Endpoint: a.Guardian, Token: accessToken}
+// pickWGServer fetches Guardian's WG server list (JWT-authenticated) and
+// chooses one: the city matching the current MASQUE selection if Guardian
+// has it, else weighted random (same weight semantics as the official
+// client).
+func (a *App) pickWGServer(ctx context.Context) (state.WGServerInfo, error) {
+	jwt, err := a.guardianJWT()
+	if err != nil {
+		return state.WGServerInfo{}, err
+	}
+	gc := &guardian.Client{Endpoint: a.Guardian, Token: jwt}
 	raw, err := gc.FetchWGServers(ctx)
 	if err != nil {
 		return state.WGServerInfo{}, err
@@ -202,6 +214,10 @@ func (a *App) WGStatus() map[string]any {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	st := map[string]any{"available": false, "version_tag": ""}
+	if a.Store.GuardianJWT != "" {
+		st["guardian_logged_in"] = true
+		st["guardian_email"] = a.Store.GuardianEmail
+	}
 	if dev := a.Store.WGDevice; dev != nil {
 		st["available"] = true
 		st["device"] = dev.Name

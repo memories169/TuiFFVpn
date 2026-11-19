@@ -22,6 +22,7 @@ package webapp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -36,16 +37,21 @@ import (
 
 // EnsureWGDevice returns the registered WireGuard device for the active
 // account, registering (or re-registering after an account switch) as
-// needed. The FxA OAuth access token for the ACTIVE account is used, same
-// as the official client.
-func (a *App) EnsureWGDevice(ctx context.Context, accessToken string) (*state.WGDeviceState, error) {
+// needed. Guardian's device registry only accepts the Guardian JWT (the
+// browser PKCE login credential) — the FxA access token is rejected with
+// errno 120 "invalid algorithm".
+func (a *App) EnsureWGDevice(ctx context.Context) (*state.WGDeviceState, error) {
 	a.mu.Lock()
 	email := a.Store.Active
 	existing := a.Store.WGDevice
+	jwt := a.Store.GuardianJWT
 	a.mu.Unlock()
 
 	if existing != nil && existing.Email == email && existing.PrivKey != "" {
 		return existing, nil
+	}
+	if jwt == "" {
+		return nil, ErrWGLoginNeeded
 	}
 
 	// Generate (or reuse an orphaned keypair if the email matches but the
@@ -55,9 +61,15 @@ func (a *App) EnsureWGDevice(ctx context.Context, accessToken string) (*state.WG
 		return nil, err
 	}
 	host := DeviceName()
-	gc := guardianClientFor(a, accessToken)
+	gc := &guardian.Client{Endpoint: a.Guardian, Token: jwt}
 	dev, err := gc.RegisterDevice(ctx, host, a.uniqueID(), keys.Public)
 	if err != nil {
+		// A rejected JWT must not wedge WG mode: drop it so the next
+		// attempt surfaces the browser login instead of a raw 401.
+		if errors.Is(err, guardian.ErrTokenInvalid) {
+			log.Printf("wg: Guardian rejected the stored JWT — clearing it (browser login required)")
+			a.ClearGuardianJWT()
+		}
 		return nil, err
 	}
 
@@ -82,11 +94,6 @@ func (a *App) EnsureWGDevice(ctx context.Context, accessToken string) (*state.WG
 	return st, nil
 }
 
-// guardianClientFor builds a Guardian client bound to the given FxA token.
-func guardianClientFor(a *App, accessToken string) *guardian.Client {
-	return &guardian.Client{Endpoint: a.Guardian, Token: accessToken}
-}
-
 // uniqueID returns a stable per-installation device id: reuse the previous
 // registration's id when present (Guardian dedupes on it), else derive a
 // stable one from the admin creation timestamp.
@@ -101,9 +108,10 @@ func (a *App) uniqueID() string {
 func DeviceName() string { return "fxvpn " + runtime.GOOS }
 
 // StartWGProxy connects the WireGuard tunnel to the given server and serves
-// SOCKS5 through it. a.mu must NOT be held.
-func (a *App) StartWGProxy(ctx context.Context, accessToken string, server state.WGServerInfo) error {
-	st, err := a.EnsureWGDevice(ctx, accessToken)
+// SOCKS5 through it. a.mu must NOT be held. The device identity must already
+// be registered (EnsureWGDevice) and the Guardian JWT stored.
+func (a *App) StartWGProxy(ctx context.Context, server state.WGServerInfo) error {
+	st, err := a.EnsureWGDevice(ctx)
 	if err != nil {
 		return err
 	}
@@ -216,13 +224,13 @@ func (a *App) RestoreWGOnBoot(ctx context.Context) error {
 		log.Printf("boot: no WireGuard server recorded — skip WG restore")
 		return nil
 	}
-	// Token may be stale after downtime — resolve a fresh one through the
-	// same single-flight gate ConnectWG uses; registration is idempotent.
-	tok, err := a.activeAccessToken(ctx)
-	if err != nil {
+	// The Guardian JWT survives downtime; the device registration is
+	// idempotent. Without the JWT (never logged in, or Guardian revoked
+	// it) WG restore is impossible — the UI surfaces the browser login.
+	if _, err := a.guardianJWT(); err != nil {
 		return fmt.Errorf("wg restore: %w", err)
 	}
-	if err := a.ConnectWGWithServer(ctx, tok, *sel); err != nil {
+	if err := a.ConnectWGWithServer(ctx, *sel); err != nil {
 		return err
 	}
 	log.Printf("boot: WireGuard tunnel restored on %s (%s:%d)", sel.Hostname, sel.IPv4AddrIn, sel.Port)
@@ -230,8 +238,8 @@ func (a *App) RestoreWGOnBoot(ctx context.Context) error {
 }
 
 // ConnectWGWithServer is ConnectWG pinned to a specific server.
-func (a *App) ConnectWGWithServer(ctx context.Context, accessToken string, server state.WGServerInfo) error {
-	if _, err := a.EnsureWGDevice(ctx, accessToken); err != nil {
+func (a *App) ConnectWGWithServer(ctx context.Context, server state.WGServerInfo) error {
+	if _, err := a.EnsureWGDevice(ctx); err != nil {
 		return fmt.Errorf("wg: device: %w", err)
 	}
 	a.mu.Lock()
@@ -240,7 +248,7 @@ func (a *App) ConnectWGWithServer(ctx context.Context, accessToken string, serve
 		a.edgeDialer = nil
 	}
 	a.mu.Unlock()
-	return a.StartWGProxy(ctx, accessToken, server)
+	return a.StartWGProxy(ctx, server)
 }
 
 // InWGMode reports whether the WireGuard transport is currently selected.

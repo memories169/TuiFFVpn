@@ -112,11 +112,21 @@
     <section id="tab-settings" class="tabpanel hidden">
       <div class="card">
         <h2>WireGuard (UDP đầy đủ)</h2>
-        <p class="muted">Đăng ký device với Guardian và chạy tunnel WireGuard thật (userspace, không cần admin). UDP trackers/DHT hoạt động — khác đường MASQUE vốn bị edge chặn UDP cho hầu hết đích.</p>
+        <p class="muted">Chạy tunnel WireGuard thật (userspace, không cần admin) — UDP trackers/DHT hoạt động, khác đường MASQUE vốn bị edge chặn UDP cho hầu hết đích.</p>
+        <p class="muted">Guardian (backend Mozilla VPN) chỉ nhận JWT do chính nó cấp qua đăng nhập trình duyệt — bước này bắt buộc, một lần cho mỗi cài đặt.</p>
         <p id="wg-status" class="muted">Đang tải trạng thái…</p>
+        <div id="wg-login-card" class="hidden">
+          <p id="wg-login-hint" class="muted">Bấm nút dưới → tab mới mở trang đăng nhập Firefox → đăng nhập xong tự quay lại đây.</p>
+          <button id="wg-login" type="button">🔐 Đăng nhập Guardian (bắt buộc)</button>
+          <details style="margin-top:8px">
+            <summary class="muted">Redirect không quay lại được console? Dán URL thủ công</summary>
+            <input type="text" id="wg-paste-url" placeholder="Dán cả URL chứa ?code=…" style="width:100%">
+            <button id="wg-paste" type="button" class="small">Hoàn tất đăng nhập</button>
+          </details>
+        </div>
+        <p id="wg-error" class="error"></p>
         <button id="wg-connect" type="button">🔌 Kết nối WireGuard</button>
         <button id="wg-stop" type="button" class="small">⏹ Ngắt</button>
-        <p id="wg-error" class="error"></p>
       </div>
       <div class="card">
         <h2>Giao diện</h2>

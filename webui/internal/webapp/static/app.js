@@ -52,23 +52,60 @@ function showApp() {
 async function refreshWG() {
   const st = await api('wg/status');
   const el = $('wg-status');
-  if (!st.available) {
-    el.textContent = 'Chưa đăng ký device — bấm "Kết nối WireGuard" để đăng ký với Guardian.';
-    return;
+  const loginCard = $('wg-login-card');
+  const needLogin = !st.guardian_logged_in;
+  loginCard.classList.toggle('hidden', !needLogin);
+  $('wg-connect').disabled = needLogin;
+  $('wg-connect').title = needLogin ? 'Đăng nhập Guardian trước' : '';
+  if (st.connected) {
+    el.textContent = `✅ WireGuard đã kết nối — tunnel ${st.tunnel_ipv4} (device: ${st.device || '?'}, Guardian: ${st.guardian_email || '?'})`;
+  } else if (st.available) {
+    el.textContent = `Device đã đăng ký: ${st.device} (tunnel ${st.ipv4}) — chưa kết nối. Guardian: ${st.guardian_email || '?'}`;
+  } else if (needLogin) {
+    el.textContent = 'Chưa đăng nhập Guardian — bắt buộc trước khi dùng WireGuard.';
+  } else {
+    el.textContent = `Đã đăng nhập Guardian (${st.guardian_email}) — bấm "Kết nối WireGuard" để đăng ký device và nối tunnel.`;
   }
-  el.textContent = st.connected
-    ? `✅ WireGuard đã kết nối — tunnel ${st.tunnel_ipv4} (device: ${st.device}, account: ${st.email})`
-    : `Device đã đăng ký: ${st.device} (tunnel ${st.ipv4}) — chưa kết nối.`;
 }
 
 function bindWG() {
+  $('wg-login').addEventListener('click', async () => {
+    $('wg-error').textContent = '';
+    const btn = $('wg-login');
+    btn.disabled = true;
+    btn.textContent = '⏳ Đang mở flow…';
+    try {
+      const res = await api('wg/login', 'POST');
+      if (res.ok && res.auth_url) {
+        window.open(res.auth_url, '_blank', 'noopener');
+        $('wg-login-hint').textContent = 'Tab đăng nhập đã mở. Sau khi đăng nhập xong, trang sẽ tự quay lại console (hoặc dán URL nếu không tự được).';
+      } else {
+        $('wg-error').textContent = res.error || 'Không bắt đầu được flow đăng nhập';
+      }
+    } catch (e) { $('wg-error').textContent = String(e); }
+    btn.disabled = false;
+    btn.textContent = '🔐 Đăng nhập Guardian (bắt buộc)';
+  });
+  $('wg-paste').addEventListener('click', async () => {
+    $('wg-error').textContent = '';
+    const u = $('wg-paste-url').value.trim();
+    if (!u) { $('wg-error').textContent = 'Dán URL chứa ?code= vào ô trên'; return; }
+    const res = await api('wg/login/paste', 'POST', { url: u });
+    if (!res.ok) { $('wg-error').textContent = res.error || 'Đăng nhập thất bại'; return; }
+    $('wg-paste-url').value = '';
+    setTimeout(refreshWG, 500);
+    setTimeout(refreshWG, 4000);
+  });
   $('wg-connect').addEventListener('click', async () => {
     $('wg-error').textContent = '';
     $('wg-connect').disabled = true;
     $('wg-connect').textContent = '⏳ Đang kết nối…';
     try {
       const res = await api('wg/connect', 'POST');
-      if (!res.ok) { $('wg-error').textContent = res.error || 'Kết nối thất bại'; }
+      if (!res.ok) {
+        $('wg-error').textContent = res.error || 'Kết nối thất bại';
+        if (res.error && res.error.includes('browser login')) refreshWG();
+      }
     } catch (e) { $('wg-error').textContent = String(e); }
     $('wg-connect').disabled = false;
     $('wg-connect').textContent = '🔌 Kết nối WireGuard';
