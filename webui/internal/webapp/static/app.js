@@ -40,12 +40,12 @@ function bindAdminForm() {
 function showApp() {
   $('admin-login').classList.add('hidden');
   $('app').classList.remove('hidden');
-  bindTabs();
-  loadAccounts();
-  loadCountries();
-  bindSettings();
-  bindLogs();
-  bindWG();
+  // Each binder runs guarded: a throw in one used to kill the rest (a dead
+  // bindSettings() call left WireGuard buttons without listeners and the
+  // status line stuck at "Đang tải trạng thái…" forever).
+  for (const bind of [bindTabs, loadAccounts, loadCountries, bindLogs, bindWG]) {
+    try { bind(); } catch (e) { console.error(`init: ${bind.name}:`, e); }
+  }
 }
 
 // ---- WireGuard mode ----
