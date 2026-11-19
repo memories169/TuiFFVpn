@@ -11,7 +11,7 @@ file của container nếu muốn dùng lại account đã thêm.
 ## 1. Điều kiện
 
 - Linux 64-bit (amd64/arm64) với session đồ họa **Wayland hoặc X11**
-- **Go ≥ 1.21** (`go version` để kiểm tra)
+- **Go ≥ 1.23** (`go version` để kiểm tra)
 - `git`, `make`, `gcc` (cgo cần gcc để link Wayland/X11/Vulkan)
 
 ### Tải bản dựng sẵn (không cần build)

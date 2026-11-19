@@ -1,10 +1,12 @@
 # syntax=docker/dockerfile:1
 # Build stage.
-# Go 1.22: the shared go.mod declares go 1.21 (the desktop GUI's Gio needs
-# it). The container binaries themselves never import the GUI package, so
-# Gio is downloaded but never compiled — CGO stays off and the image ships
-# no GUI libraries.
-FROM golang:1.22-alpine AS build
+# Go 1.25: go.mod declares go 1.23.1 (the WireGuard device-registration
+# work needs it). Official golang images set GOTOOLCHAIN=local, so the
+# image version must be >= the go.mod directive — Go will not fetch a
+# newer toolchain on its own. The container binaries never import the
+# desktop GUI package, so Gio is downloaded but never compiled — CGO
+# stays off and the image ships no GUI libraries.
+FROM golang:1.25-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 ARG VERSION=docker

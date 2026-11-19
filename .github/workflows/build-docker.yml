@@ -32,9 +32,9 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          # go.mod declares go 1.21 (the desktop GUI's Gio requires it);
+          # go.mod declares go 1.23.1 (WireGuard device registration);
           # the container binaries compile CGO_ENABLED=0 and never link Gio.
-          go-version: "1.22"
+          go-version: "1.25"
           cache: true
 
       - name: Run Go tests
